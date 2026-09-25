@@ -1,10 +1,13 @@
 import os
 import sys
 
-# Ensure repository root is on sys.path
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+# Ensure uniface-app root and src are on sys.path
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
+SRC_DIR = os.path.join(APP_ROOT, "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
 
 from src.app import demo, custom_theme
 
