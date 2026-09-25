@@ -755,8 +755,11 @@ def handle_launch_live():
         return "⚠️ Skripta `live_cam.py` nije pronađena."
     try:
         import subprocess
-        subprocess.Popen([sys.executable, live_script])
-        return "🎥 **Live kamera (Logitech C270) pokrenuta u zasebnom prozoru!**\n*(Za izlaz pritisnite tipku `Q` ili `ESC` u prozoru kamere)*"
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NEW_CONSOLE
+        subprocess.Popen([sys.executable, live_script], creationflags=creationflags)
+        return "🎥 **Live kamera (Logitech C270) je uspješno pokrenuta u novom prozoru!**\n*(Za izlaz pritisnite tipku `Q` ili `ESC` u prozoru kamere)*"
     except Exception as e:
         return f"❌ Greška pri pokretanju kamere: {e}"
 

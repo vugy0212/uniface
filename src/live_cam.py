@@ -5,6 +5,18 @@ import argparse
 import cv2
 import numpy as np
 
+# Prevent Windows console cp1250 UnicodeEncodeError
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Ensure src and root are in sys.path
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(CURRENT_DIR)
@@ -98,7 +110,7 @@ def run_live_camera(camera_idx=0, threshold=0.45, process_interval=2, device="CP
     
     cap = cv2.VideoCapture(camera_idx, cv2.CAP_DSHOW)
     if not cap.isOpened():
-        print(f"❌ Ne mogu otvoriti kameru na indeksu {camera_idx}. Provjerite je li kamera spojena.")
+        print(f"[GRESKA] Ne mogu otvoriti kameru na indeksu {camera_idx}. Provjerite je li kamera spojena.")
         return False
         
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -107,13 +119,21 @@ def run_live_camera(camera_idx=0, threshold=0.45, process_interval=2, device="CP
     window_name = "UniFace Live Recognition - Logitech C270"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1280, 720)
+    try:
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+    except Exception:
+        pass
     
-    print("Ucitavam biometrijski FaceIndex u memoriju...")
+    print("[INFO] Ucitavam biometrijski FaceIndex u memoriju...")
     face_idx = face_engine.get_face_index()
     stats = db.get_stats()
     total_persons = stats["total_persons"]
-    print(f"✅ Ucitano {total_persons} osoba i {stats['total_samples']} uzoraka.")
-    print("Pokrecem video tok. Pritisnite 'Q' za izlaz...")
+    print(f"[OK] Ucitano {total_persons} osoba i {stats['total_samples']} uzoraka.")
+    
+    print("[INFO] Zagrijavam AI modele za prepoznavanje...")
+    face_engine.get_analyzer(device=device, with_attributes=False)
+    print("[OK] AI modeli spremni za rad!")
+    print("Pokrecem video prikaz. Za izlaz pritisnite tipku 'Q' ili 'ESC' u prozoru kamere...")
 
     frame_count = 0
     fps = 0.0
@@ -249,25 +269,25 @@ def run_live_camera(camera_idx=0, threshold=0.45, process_interval=2, device="CP
                 t_str = time.strftime("%Y%m%d_%H%M%S")
                 snap_path = os.path.join(UPLOADS_DIR, f"live_snap_{t_str}.jpg")
                 imwrite_unicode(snap_path, frame)
-                status_notification = f"💾 Kadar spremljen u: data/uploads/live_snap_{t_str}.jpg"
+                status_notification = f"Kadar spremljen u: data/uploads/live_snap_{t_str}.jpg"
                 status_notification_time = time.time()
-                print(f"✅ {status_notification}")
+                print(f"[OK] {status_notification}")
             elif key in (ord('+'), ord('=')): # Increase threshold
                 threshold = min(0.95, round(threshold + 0.02, 2))
-                status_notification = f"🎯 Prag povecan na: {threshold:.2f} (stroze)"
+                status_notification = f"Prag povecan na: {threshold:.2f} (stroze)"
                 status_notification_time = time.time()
             elif key in (ord('-'), ord('_')): # Decrease threshold
                 threshold = max(0.20, round(threshold - 0.02, 2))
-                status_notification = f"🎯 Prag smanjen na: {threshold:.2f} (blaze)"
+                status_notification = f"Prag smanjen na: {threshold:.2f} (blaze)"
                 status_notification_time = time.time()
             elif key in (ord('r'), ord('R')): # Refresh DB cache
                 db.invalidate_cache()
                 face_idx = face_engine.get_face_index()
                 stats = db.get_stats()
                 total_persons = stats["total_persons"]
-                status_notification = f"🔄 Baza osvjezena! Osoba: {total_persons}"
+                status_notification = f"Baza osvjezena! Osoba: {total_persons}"
                 status_notification_time = time.time()
-                print(f"✅ {status_notification}")
+                print(f"[OK] {status_notification}")
                 
     finally:
         cap.release()
