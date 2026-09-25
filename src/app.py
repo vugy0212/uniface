@@ -13,14 +13,17 @@ import db
 import face_engine
 import hardware
 import backup
+import config
 from image_utils import imread_unicode, imwrite_unicode, save_image_dedup
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(APP_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 CROPS_DIR = os.path.join(DATA_DIR, "crops")
+SNAPSHOTS_DIR = config.get_snapshot_dir()
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(CROPS_DIR, exist_ok=True)
+os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
 
 def _get_single_state(state):
     if not isinstance(state, dict):
@@ -749,7 +752,7 @@ def handle_import_backup(file_obj):
 def handle_refresh_sysinfo():
     return hardware.get_system_report_markdown(DATA_DIR)
 
-def handle_launch_live():
+def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", youtube_url="", video_file=None, start_sec=0, log_events=False, cooldown_sec=30):
     live_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_cam.py")
     if not os.path.exists(live_script):
         return "⚠️ Skripta `live_cam.py` nije pronađena."
@@ -758,10 +761,248 @@ def handle_launch_live():
         creationflags = 0
         if sys.platform == "win32":
             creationflags = subprocess.CREATE_NEW_CONSOLE
-        subprocess.Popen([sys.executable, live_script], creationflags=creationflags)
-        return "🎥 **Live kamera (Logitech C270) je uspješno pokrenuta u novom prozoru!**\n*(Za izlaz pritisnite tipku `Q` ili `ESC` u prozoru kamere)*"
+            
+        candidates = [
+            os.path.join(APP_DIR, ".venv", "Scripts", "python.exe"),
+            os.path.join(os.path.dirname(APP_DIR), ".venv", "Scripts", "python.exe"),
+            os.path.join(sys.prefix, "Scripts", "python.exe"),
+            sys.executable
+        ]
+        py_exe = sys.executable
+        for cand in candidates:
+            if os.path.isfile(cand):
+                py_exe = cand
+                break
+                
+        env = os.environ.copy()
+        venv_scripts = os.path.dirname(py_exe)
+        env["PATH"] = venv_scripts + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = os.path.dirname(venv_scripts)
+
+        if source_type == "USB Web Kamera":
+            source_arg = str(usb_idx).strip() or "0"
+            target_name = f"USB kamera (indeks {source_arg})"
+        elif source_type == "IP / RTSP Kamera za nadzor":
+            source_arg = str(rtsp_url).strip()
+            target_name = f"IP Nadzor ({source_arg})"
+        elif source_type == "YouTube / Web Video":
+            source_arg = str(youtube_url).strip()
+            target_name = f"YouTube Video ({source_arg})"
+        elif source_type == "Lokalna Video Datoteka":
+            if video_file is None:
+                return "⚠️ Molimo odaberite video datoteku s računala."
+            source_arg = getattr(video_file, "name", str(video_file))
+            target_name = f"Datoteka: {os.path.basename(source_arg)}"
+        else:
+            source_arg = "0"
+            target_name = "Kamera"
+
+        if not source_arg:
+            return "⚠️ Molimo unesite valjanu adresu ili odaberite izvor."
+
+        cmd = [py_exe, live_script, "--source", source_arg]
+        if start_sec and int(start_sec) > 0 and source_type in ("YouTube / Web Video", "Lokalna Video Datoteka"):
+            cmd.extend(["--start", str(int(start_sec))])
+            target_name += f" (od {int(start_sec) // 60:02d}:{int(start_sec) % 60:02d})"
+
+        if log_events:
+            cmd.extend(["--log-events", "--cooldown", str(int(cooldown_sec))])
+            target_name += f" [📋 Dnevnik: {int(cooldown_sec)}s]"
+
+        subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
+        
+        return f"🎥 **Live prepoznavanje [{target_name}] je uspješno pokrenuto u novom prozoru!**\n*(Pritisnite tipku `S` za spremanje kadra u mapu, `O` za otvaranje mape, klizač ili `A`/`D`/`J`/`L` za premotavanje videa, `Q` za izlaz)*"
     except Exception as e:
-        return f"❌ Greška pri pokretanju kamere: {e}"
+        return f"❌ Greška pri pokretanju: {e}"
+
+# ---------------- SNAPSHOTS & ARCHIVE HELPERS ----------------
+def get_snapshots_ui_data():
+    snaps = config.get_saved_snapshots()
+    gallery_items = []
+    table_rows = []
+    choices = []
+    for s in snaps:
+        gallery_items.append((s["path"], f"{s['filename']} ({s['size_kb']} KB)"))
+        table_rows.append([s["filename"], s["time_str"], f"{s['size_kb']} KB"])
+        choices.append(s["filename"])
+        
+    total_mb = sum(s["size_kb"] for s in snaps) / 1024.0
+    snap_dir = config.get_snapshot_dir()
+    info_md = f"📁 **Mapa za spremanje snimaka:** `{snap_dir}` &nbsp;|&nbsp; 📸 **Ukupno snimki:** `{len(snaps)}` &nbsp;|&nbsp; 💾 **Zauzeće:** `{total_mb:.2f} MB`"
+    
+    first_choice = choices[0] if choices else None
+    first_preview = snaps[0]["path"] if snaps else None
+    first_desc = ""
+    if snaps:
+        s0 = snaps[0]
+        first_desc = f"📸 **Datoteka:** `{s0['filename']}`\n\n🕒 **Vrijeme snimanja:** {s0['time_str']} &nbsp;|&nbsp; 💾 **Veličina:** {s0['size_kb']} KB\n\n📍 **Puna putanja:** `{s0['path']}`"
+        
+    return gallery_items, table_rows, info_md, gr.update(choices=choices, value=first_choice), first_preview, first_desc
+
+def on_snapshot_gallery_select(evt: gr.SelectData):
+    snaps = config.get_saved_snapshots()
+    idx = evt.index
+    if 0 <= idx < len(snaps):
+        s = snaps[idx]
+        desc = f"📸 **Datoteka:** `{s['filename']}`\n\n🕒 **Vrijeme snimanja:** {s['time_str']} &nbsp;|&nbsp; 💾 **Veličina:** {s['size_kb']} KB\n\n📍 **Puna putanja:** `{s['path']}`"
+        return s["path"], desc, gr.update(value=s["filename"])
+    return None, "", gr.update()
+
+def on_snapshot_dropdown_change(filename):
+    if not filename:
+        return None, ""
+    snap_dir = config.get_snapshot_dir()
+    path = os.path.join(snap_dir, filename)
+    if os.path.isfile(path):
+        import time
+        stat = os.stat(path)
+        t_str = time.strftime("%d.%m.%Y. %H:%M:%S", time.localtime(stat.st_mtime))
+        size_kb = round(stat.st_size / 1024, 1)
+        desc = f"📸 **Datoteka:** `{filename}`\n\n🕒 **Vrijeme snimanja:** {t_str} &nbsp;|&nbsp; 💾 **Veličina:** {size_kb} KB\n\n📍 **Puna putanja:** `{path}`"
+        return path, desc
+    return None, "Datoteka nije pronađena."
+
+def on_delete_snapshot_click(filename):
+    if not filename:
+        g, t, info, dd, prev, desc = get_snapshots_ui_data()
+        return "⚠️ Odaberite snimku za brisanje.", g, t, info, dd, prev, desc
+    snap_dir = config.get_snapshot_dir()
+    path = os.path.join(snap_dir, filename)
+    if os.path.isfile(path):
+        try:
+            os.remove(path)
+            msg = f"🗑️ Snimka `{filename}` je uspješno obrisana."
+        except Exception as e:
+            msg = f"❌ Greška pri brisanju: {e}"
+    else:
+        msg = "⚠️ Datoteka više ne postoji na disku."
+    g, t, info, dd, prev, desc = get_snapshots_ui_data()
+    return msg, g, t, info, dd, prev, desc
+
+def on_save_snapshot_dir_click(new_dir):
+    ok, msg = config.set_snapshot_dir(new_dir)
+    g, t, info, dd, prev, desc = get_snapshots_ui_data()
+    return msg, info, g, t, dd, prev, desc
+
+def on_reset_snapshot_dir_click():
+    ok, msg = config.set_snapshot_dir(config.DEFAULT_SNAPSHOT_DIR)
+    g, t, info, dd, prev, desc = get_snapshots_ui_data()
+    return f"Vraćeno na zadanu mapu: `{config.DEFAULT_SNAPSHOT_DIR}`", config.DEFAULT_SNAPSHOT_DIR, info, g, t, dd, prev, desc
+
+def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur):
+    if not filename:
+        return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], "⚠️ Nema odabrane snimke."
+    snap_dir = config.get_snapshot_dir()
+    path = os.path.join(snap_dir, filename)
+    if not os.path.isfile(path):
+        return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], "⚠️ Datoteka nije pronađena."
+    
+    pil_img = Image.open(path).convert("RGB")
+    annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state = recognize_faces(
+        pil_img, threshold, landmarks, blur
+    )
+    msg = f"✅ Kadar `{filename}` je prebačen u Tab 1 i analiziran!"
+    return pil_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, msg
+
+# ---------------- DETECTION EVENT LOG HELPERS ----------------
+def get_events_ui_data(search_query=""):
+    events = db.get_detection_events(limit=300, name_filter=search_query)
+    stats = db.get_detection_stats()
+    
+    table_rows = []
+    gallery_items = []
+    
+    for ev in events:
+        sim_pct = f"{ev['similarity']*100:.1f}%"
+        table_rows.append([
+            ev["id"],
+            ev["local_time"],
+            ev["person_name"],
+            sim_pct,
+            ev["source_label"]
+        ])
+        snap_p = ev.get("snapshot_path", "")
+        crop_p = ev.get("crop_path", "")
+        thumb = crop_p if (crop_p and os.path.exists(crop_p)) else (snap_p if (snap_p and os.path.exists(snap_p)) else None)
+        if thumb and os.path.exists(thumb):
+            caption = f"{ev['person_name']} ({sim_pct}) - {ev['local_time']}"
+            gallery_items.append((thumb, caption))
+            
+    stats_md = (
+        f"📊 **Ukupno prolazaka:** `{stats['total_events']}` &nbsp;|&nbsp; "
+        f"👥 **Jedinstvenih osoba:** `{stats['unique_persons']}` &nbsp;|&nbsp; "
+        f"⏱️ **Zadnji zabilježeni prolazak:** `{stats['latest_event']}`"
+    )
+    first_cam = None
+    first_crop = None
+    first_info = "💡 *Kliknite na redak u tablici ili sličicu u galeriji za pregled kadra kamere i detalja.*"
+    if events:
+        first_ev = events[0]
+        c_p = first_ev.get("snapshot_path", "")
+        cr_p = first_ev.get("crop_path", "")
+        first_cam = c_p if (c_p and os.path.exists(c_p)) else (cr_p if (cr_p and os.path.exists(cr_p)) else None)
+        first_crop = cr_p if (cr_p and os.path.exists(cr_p)) else None
+        cam_desc = "Kadar s kamere (nadzor)" if (c_p and os.path.exists(c_p)) else "Izrezano lice"
+        first_info = (
+            f"### 📋 Detalji odabranog prolaska\n"
+            f"* **Prepoznata osoba:** **`{first_ev['person_name']}`**\n"
+            f"* **Vrijeme prolaska:** `{first_ev['local_time']}`\n"
+            f"* **Pouzdanost / Sličnost:** **`{first_ev['similarity']*100:.1f}%`**\n"
+            f"* **Izvor / Kamera:** `{first_ev['source_label']}`\n"
+            f"* **Prikaz slike:** {cam_desc}"
+        )
+        
+    return stats_md, table_rows, gallery_items, first_cam, first_crop, first_info
+
+def on_events_search(search_query=""):
+    return get_events_ui_data(search_query)
+
+def on_event_select(evt: gr.SelectData, search_query=""):
+    events = db.get_detection_events(limit=300, name_filter=search_query)
+    row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+    if 0 <= row_idx < len(events):
+        ev = events[row_idx]
+        cam_p = ev.get("snapshot_path", "")
+        crop_p = ev.get("crop_path", "")
+        main_img = cam_p if (cam_p and os.path.exists(cam_p)) else (crop_p if (crop_p and os.path.exists(crop_p)) else None)
+        crop_img = crop_p if (crop_p and os.path.exists(crop_p)) else None
+        sim_pct = f"{ev['similarity']*100:.1f}%"
+        cam_desc = "✅ Puni kadar kamere" if (cam_p and os.path.exists(cam_p)) else "ℹ️ Prikaz izrezanog lica"
+        info = (
+            f"### 📋 Detalji prolaska #{ev['id']}\n"
+            f"* **Prepoznata osoba:** **`{ev['person_name']}`**\n"
+            f"* **Vrijeme prolaska:** `{ev['local_time']}`\n"
+            f"* **Pouzdanost / Sličnost:** **`{sim_pct}`**\n"
+            f"* **Izvor / Kamera:** `{ev['source_label']}`\n"
+            f"* **Prikaz slike:** {cam_desc}"
+        )
+        return main_img, crop_img, info
+    return None, None, "Događaj nije pronađen."
+
+def handle_clear_events():
+    db.clear_detection_events()
+    return get_events_ui_data("")
+
+def handle_export_events_csv():
+    events = db.get_detection_events(limit=5000)
+    if not events:
+        return None, "⚠️ Nema zabilježenih događaja za izvoz."
+    import csv
+    export_path = os.path.join(DATA_DIR, "dnevnik_prolazaka_export.csv")
+    with open(export_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["ID", "Vrijeme", "Ime Osobe", "Sličnost (%)", "Izvor / Kamera", "Putanja do lica", "Putanja do kadra kamere"])
+        for ev in events:
+            writer.writerow([
+                ev["id"],
+                ev["local_time"],
+                ev["person_name"],
+                f"{ev['similarity']*100:.1f}%",
+                ev["source_label"],
+                ev.get("crop_path", ""),
+                ev.get("snapshot_path", "")
+            ])
+    return gr.update(value=export_path, visible=True), f"✅ Uspješno izvezeno {len(events)} prolazaka u CSV!"
 
 # ---------------- GRADIO UI ----------------
 custom_theme = gr.themes.Soft(
@@ -810,9 +1051,72 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             landmarks_chk = gr.Checkbox(value=False, label="Prikaži točke lica (Landmarks)")
                             blur_chk = gr.Checkbox(value=False, label="Zamućenje nepoznatih lica")
                             
+                    with gr.Accordion("📹 Odabir izvora za Live Prikaz (USB / IP Nadzor / YouTube / Video)", open=False):
+                        cam_source_type = gr.Radio(
+                            choices=[
+                                "USB Web Kamera", 
+                                "IP / RTSP Kamera za nadzor", 
+                                "YouTube / Web Video", 
+                                "Lokalna Video Datoteka"
+                            ],
+                            value="USB Web Kamera",
+                            label="Vrsta video izvora"
+                        )
+                        cam_usb_idx = gr.Dropdown(
+                            choices=["0", "1", "2", "3"],
+                            value="0",
+                            label="Indeks lokalne USB kamere",
+                            info="0 je ugrađena ili prva spojena kamera, 1 je druga..."
+                        )
+                        cam_rtsp_url = gr.Textbox(
+                            label="RTSP ili HTTP adresa IP kamere za nadzor",
+                            placeholder="npr. rtsp://admin:lozinka@192.168.1.100:554/stream1 ili http://192.168.1.15:8080/video",
+                            info="Podržava RTSP streamove sigurnosnih kamera ili HTTP MJPEG stream s mobitela",
+                            visible=False
+                        )
+                        cam_youtube_url = gr.Textbox(
+                            label="YouTube / Vimeo video link",
+                            placeholder="npr. https://www.youtube.com/watch?v=... ili https://youtu.be/...",
+                            info="Automatski dohvaća i reproducira video stream u stvarnom vremenu s prepoznavanjem lica",
+                            visible=False
+                        )
+                        cam_video_file = gr.File(
+                            label="Učitaj video datoteku s računala (.mp4, .mkv, .avi, .mov)",
+                            file_types=[".mp4", ".mkv", ".avi", ".mov"],
+                            visible=False
+                        )
+                        cam_start_sec = gr.Slider(
+                            minimum=0,
+                            maximum=7200,
+                            value=0,
+                            step=5,
+                            label="⏩ Početak reprodukcije videa (u sekundama)",
+                            info="Omogućuje pokretanje YouTube ili lokalnog videa od željene minute/sekunde (npr. 60 = 01:00 min, 300 = 05:00 min)",
+                            visible=False
+                        )
+
+                    with gr.Row():
+                        cam_enable_log = gr.Checkbox(
+                            value=False,
+                            label="📋 Aktiviraj evidenciju prolazaka (Dnevnik)",
+                            info="Automatski zapisuje prepoznate osobe u evidenciju prolazaka uz vrijeme i sličnost",
+                            scale=2
+                        )
+                        cam_cooldown_sec = gr.Slider(
+                            minimum=5,
+                            maximum=300,
+                            value=30,
+                            step=5,
+                            label="⏱️ Cooldown filter (sekunde)",
+                            info="Istu osobu ne bilježi ponovno unutar zadanog broja sekundi",
+                            visible=False,
+                            scale=2
+                        )
+
                     with gr.Row():
                         btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2)
                         btn_launch_live = gr.Button("🎥 Pokreni Live Kameru (Prozor)", variant="secondary", scale=2)
+                        btn_open_snaps_quick = gr.Button("📂 Otvori mapu snimki (S)", variant="secondary", scale=1)
                     
                 with gr.Column(scale=1):
                     annotated_out = gr.Image(type="numpy", label="Vizualni rezultat prepoznavanja")
@@ -989,7 +1293,135 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         btn_delete_sample = gr.Button("Obriši odabranu sliku", variant="secondary")
                     sample_action_status = gr.Markdown("")
 
-        # ------------------ TAB 3: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
+        # ------------------ TAB 3: SPREMLJENI KADROVI (SNAPSHOTS) ------------------
+        with gr.TabItem("📸 Spremljeni Kadrovi (Snapshots)"):
+            with gr.Row():
+                with gr.Column(scale=3):
+                    snap_init_g, snap_init_t, snap_init_info, snap_init_dd, snap_init_prev, snap_init_desc = get_snapshots_ui_data()
+                    snapshots_info_md = gr.Markdown(snap_init_info)
+                with gr.Column(scale=1):
+                    with gr.Row():
+                        btn_open_snapshots_folder = gr.Button("📂 Otvori mapu u Exploreru", variant="primary")
+                        btn_refresh_snapshots = gr.Button("🔄 Osvježi galeriju", variant="secondary")
+
+            with gr.Row():
+                # Lijevi stupac: Galerija sličica (male ikone)
+                with gr.Column(scale=3):
+                    gr.Markdown("### 🖼️ Sličice spremljenih kadrova *(kliknite na sliku za odabir)*")
+                    snapshots_gallery = gr.Gallery(
+                        label="Spremljeni kadrovi",
+                        columns=4,
+                        rows=2,
+                        height=420,
+                        allow_preview=False,
+                        value=snap_init_g
+                    )
+                    
+                    gr.Markdown("### 📋 Popis datoteka na disku")
+                    snapshots_table = gr.Dataframe(
+                        headers=["Naziv datoteke", "Datum i vrijeme snimanja", "Veličina"],
+                        label="Popis snimaka",
+                        interactive=False,
+                        value=snap_init_t
+                    )
+
+                # Desni stupac: Detalji odabrane snimke i akcije
+                with gr.Column(scale=2):
+                    gr.Markdown("### 🔍 Pregled odabranog kadra i akcije")
+                    selected_snap_dropdown = gr.Dropdown(
+                        label="Odaberite snimku za analizu ili brisanje:",
+                        choices=[r[0] for r in snap_init_t],
+                        value=snap_init_t[0][0] if snap_init_t else None,
+                        interactive=True
+                    )
+                    selected_snap_preview = gr.Image(
+                        type="filepath",
+                        label="Prikaz kadra (Annotated / HUD)",
+                        value=snap_init_prev,
+                        height=280
+                    )
+                    selected_snap_info = gr.Markdown(snap_init_desc)
+                    
+                    with gr.Row():
+                        btn_send_to_rec = gr.Button("🔍 Pošalji na prepoznavanje lica", variant="primary")
+                        btn_delete_snap = gr.Button("🗑️ Obriši snimku", variant="stop")
+                    snap_action_status = gr.Markdown("")
+
+            with gr.Accordion("⚙️ Postavke lokacije spremanja snimaka (Snapshot Folder)", open=False):
+                gr.Markdown(
+                    """
+                    Ovdje možete promijeniti mapu u koju se automatski spremaju kadrovi kada u live video prozoru pritisnete tipku **S**.
+                    Zadana mapa je unutar aplikacije (`data/snapshots`), no možete odabrati bilo koju mapu na vašem disku (npr. `D:\\Nadzor\\Kadrovi`).
+                    """
+                )
+                with gr.Row():
+                    custom_snap_dir_input = gr.Textbox(
+                        label="Putanja do mape za spremanje snimaka na računalu",
+                        value=config.get_snapshot_dir(),
+                        placeholder="npr. D:\\Nadzor\\Snimke ili C:\\UniFace_Kadrovi",
+                        scale=3
+                    )
+                    btn_save_snap_dir = gr.Button("💾 Spremi novu mapu", variant="primary", scale=1)
+                    btn_reset_snap_dir = gr.Button("🔄 Vrati na zadano (data/snapshots)", variant="secondary", scale=1)
+                snap_dir_status_md = gr.Markdown("")
+
+        # ------------------ TAB 4: DNEVNIK PROLAZAKA (EVIDENCIJA) ------------------
+        with gr.TabItem("📋 Dnevnik Prolazaka (Evidencija)") as tab_events:
+            ev_stats_init, ev_table_init, ev_gallery_init, ev_cam_init, ev_crop_init, ev_info_init = get_events_ui_data()
+            events_stats_md = gr.Markdown(ev_stats_init)
+            
+            with gr.Row():
+                with gr.Column(scale=3):
+                    events_search_input = gr.Textbox(
+                        label="🔍 Filtriraj evidenciju po imenu osobe",
+                        placeholder="Upišite ime za brzu pretragu...",
+                        interactive=True
+                    )
+                with gr.Column(scale=1):
+                    with gr.Row():
+                        btn_refresh_events = gr.Button("🔄 Osvježi", variant="secondary")
+                        btn_clear_events = gr.Button("🗑️ Očisti dnevnik", variant="stop")
+            
+            with gr.Row():
+                with gr.Column(scale=3):
+                    gr.Markdown("### 📜 Kronološki popis detekcija i prolazaka (kliknite redak za prikaz)")
+                    events_table = gr.Dataframe(
+                        headers=["ID", "Datum i Vrijeme", "Prepoznata Osoba", "Sličnost", "Izvor / Kamera"],
+                        value=ev_table_init,
+                        interactive=False,
+                        label="Zabilježeni prolasci"
+                    )
+                    gr.Markdown("### 🖼️ Galerija lica u trenutku prolaska (kliknite sličicu za prikaz)")
+                    events_gallery = gr.Gallery(
+                        value=ev_gallery_init,
+                        columns=3,
+                        height=260,
+                        allow_preview=False,
+                        label="Sličice prolazaka"
+                    )
+                with gr.Column(scale=2):
+                    gr.Markdown("### 📷 Prikaz kadra s kamere i detalji prolaska")
+                    event_camera_preview = gr.Image(
+                        value=ev_cam_init,
+                        label="📹 Kadar kamere u trenutku prepoznavanja",
+                        interactive=False
+                    )
+                    with gr.Row():
+                        event_crop_preview = gr.Image(
+                            value=ev_crop_init,
+                            label="👤 Izrezano lice",
+                            interactive=False,
+                            width=140,
+                            height=140
+                        )
+                        event_details_md = gr.Markdown(ev_info_init)
+            
+            with gr.Row():
+                btn_export_events_csv = gr.Button("📥 Izvezi cijeli dnevnik u CSV (Excel)", variant="primary", scale=1)
+                events_export_file = gr.File(label="Preuzmi izvezenu CSV datoteku", visible=False, scale=2)
+            events_status_md = gr.Markdown("")
+
+        # ------------------ TAB 5: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
         with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
             with gr.Row():
                 with gr.Column(scale=1):
@@ -1134,8 +1566,31 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state]
     )
 
+    def on_cam_source_change(st):
+        is_video = st in ("YouTube / Web Video", "Lokalna Video Datoteka")
+        return (
+            gr.update(visible=(st == "USB Web Kamera")),
+            gr.update(visible=(st == "IP / RTSP Kamera za nadzor")),
+            gr.update(visible=(st == "YouTube / Web Video")),
+            gr.update(visible=(st == "Lokalna Video Datoteka")),
+            gr.update(visible=is_video)
+        )
+
+    cam_source_type.change(
+        fn=on_cam_source_change,
+        inputs=[cam_source_type],
+        outputs=[cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec]
+    )
+
+    cam_enable_log.change(
+        fn=lambda v: gr.update(visible=v),
+        inputs=[cam_enable_log],
+        outputs=[cam_cooldown_sec]
+    )
+
     btn_launch_live.click(
         fn=handle_launch_live,
+        inputs=[cam_source_type, cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec, cam_enable_log, cam_cooldown_sec],
         outputs=[rec_status_md]
     )
     
@@ -1189,6 +1644,96 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     ).then(
         fn=refresh_database_view,
         outputs=[db_table, db_stats_md]
+    )
+
+    btn_open_snaps_quick.click(
+        fn=lambda: config.open_folder_in_explorer()[1],
+        outputs=[rec_status_md]
+    )
+
+    btn_open_snapshots_folder.click(
+        fn=lambda: config.open_folder_in_explorer()[1],
+        outputs=[snap_action_status]
+    )
+
+    btn_refresh_snapshots.click(
+        fn=get_snapshots_ui_data,
+        outputs=[snapshots_gallery, snapshots_table, snapshots_info_md, selected_snap_dropdown, selected_snap_preview, selected_snap_info]
+    )
+
+    snapshots_gallery.select(
+        fn=on_snapshot_gallery_select,
+        outputs=[selected_snap_preview, selected_snap_info, selected_snap_dropdown]
+    )
+
+    selected_snap_dropdown.change(
+        fn=on_snapshot_dropdown_change,
+        inputs=[selected_snap_dropdown],
+        outputs=[selected_snap_preview, selected_snap_info]
+    )
+
+    btn_delete_snap.click(
+        fn=on_delete_snapshot_click,
+        inputs=[selected_snap_dropdown],
+        outputs=[snap_action_status, snapshots_gallery, snapshots_table, snapshots_info_md, selected_snap_dropdown, selected_snap_preview, selected_snap_info]
+    )
+
+    btn_save_snap_dir.click(
+        fn=on_save_snapshot_dir_click,
+        inputs=[custom_snap_dir_input],
+        outputs=[snap_dir_status_md, snapshots_info_md, snapshots_gallery, snapshots_table, selected_snap_dropdown, selected_snap_preview, selected_snap_info]
+    )
+
+    btn_reset_snap_dir.click(
+        fn=on_reset_snapshot_dir_click,
+        outputs=[snap_dir_status_md, custom_snap_dir_input, snapshots_info_md, snapshots_gallery, snapshots_table, selected_snap_dropdown, selected_snap_preview, selected_snap_info]
+    )
+
+    btn_send_to_rec.click(
+        fn=on_send_snapshot_to_recognition,
+        inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_chk],
+        outputs=[input_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, snap_action_status]
+    )
+
+    # 9. Detection Events wiring
+    events_search_input.change(
+        fn=on_events_search,
+        inputs=[events_search_input],
+        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
+    )
+
+    btn_refresh_events.click(
+        fn=on_events_search,
+        inputs=[events_search_input],
+        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
+    )
+
+    btn_clear_events.click(
+        fn=handle_clear_events,
+        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
+    )
+
+    events_table.select(
+        fn=on_event_select,
+        inputs=[events_search_input],
+        outputs=[event_camera_preview, event_crop_preview, event_details_md]
+    )
+
+    events_gallery.select(
+        fn=on_event_select,
+        inputs=[events_search_input],
+        outputs=[event_camera_preview, event_crop_preview, event_details_md]
+    )
+
+    btn_export_events_csv.click(
+        fn=handle_export_events_csv,
+        outputs=[events_export_file, events_status_md]
+    )
+
+    tab_events.select(
+        fn=on_events_search,
+        inputs=[events_search_input],
+        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
     )
 
     btn_refresh_sysinfo.click(

@@ -1,13 +1,12 @@
 import os
 import sys
 
-# Ensure uniface-app root and src are on sys.path
-APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if APP_ROOT not in sys.path:
-    sys.path.insert(0, APP_ROOT)
-SRC_DIR = os.path.join(APP_ROOT, "src")
-if SRC_DIR not in sys.path:
-    sys.path.insert(0, SRC_DIR)
+# Ensure directories are on sys.path
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(CURRENT_DIR)
+for p in [CURRENT_DIR, os.path.join(CURRENT_DIR, "src"), PARENT_DIR, os.path.join(PARENT_DIR, "src")]:
+    if os.path.exists(p) and p not in sys.path:
+        sys.path.insert(0, p)
 
 from src.app import demo, custom_theme
 

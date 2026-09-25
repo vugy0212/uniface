@@ -172,6 +172,7 @@ class FaceIndex:
             return {
                 "matched": False,
                 "best_name": "Baza je prazna",
+                "person_name": "Baza je prazna",
                 "similarity": 0.0,
                 "person_id": None,
                 "status": "Nema baze",
@@ -234,6 +235,7 @@ class FaceIndex:
         return {
             "matched": matched,
             "best_name": best["person_name"],
+            "person_name": best["person_name"],
             "person_id": best["person_id"],
             "similarity": best["similarity"],
             "status": status,
@@ -243,6 +245,10 @@ class FaceIndex:
             "margin": margin,
             "crop_path": best["crop_path"]
         }
+
+    def match_sample_hybrid(self, query_embedding: np.ndarray, threshold: float = 0.50) -> dict:
+        """Alias for match method for backward and live camera compatibility."""
+        return self.match(query_embedding, threshold=threshold)
 
 _face_index = None
 

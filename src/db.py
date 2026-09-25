@@ -67,7 +67,28 @@ def init_db():
                 );
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS detection_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    person_name TEXT NOT NULL,
+                    similarity REAL NOT NULL,
+                    source_label TEXT NOT NULL,
+                    crop_path TEXT DEFAULT '',
+                    snapshot_path TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            try:
+                conn.execute("ALTER TABLE detection_events ADD COLUMN snapshot_path TEXT DEFAULT '';")
+            except Exception:
+                pass
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_face_samples_person_id ON face_samples(person_id);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_detection_events_created ON detection_events(created_at);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_detection_events_name ON detection_events(person_name);
             """)
 
 def add_person(name: str, notes: str = "") -> int:
@@ -228,6 +249,67 @@ def get_cached_embeddings():
     if _cached_embeddings is None:
         _cached_embeddings = get_all_embeddings()
     return _cached_embeddings
+
+def log_detection_event(person_name: str, similarity: float, source_label: str, crop_path: str = "", snapshot_path: str = "") -> int:
+    """Inserts a detection event into the event log."""
+    with get_db() as conn:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO detection_events (person_name, similarity, source_label, crop_path, snapshot_path) VALUES (?, ?, ?, ?, ?)",
+                (person_name.strip(), float(similarity), source_label.strip(), crop_path.strip(), snapshot_path.strip())
+            )
+            return cur.lastrowid
+
+def get_detection_events(limit: int = 300, name_filter: str = ""):
+    """Fetches recent detection events, optionally filtered by person name."""
+    with get_db() as conn:
+        if name_filter and name_filter.strip():
+            query = """
+                SELECT id, person_name, similarity, source_label, crop_path, snapshot_path,
+                       datetime(created_at, 'localtime') as local_time
+                FROM detection_events
+                WHERE LOWER(person_name) LIKE LOWER(?)
+                ORDER BY id DESC LIMIT ?
+            """
+            rows = conn.execute(query, (f"%{name_filter.strip()}%", limit)).fetchall()
+        else:
+            query = """
+                SELECT id, person_name, similarity, source_label, crop_path, snapshot_path,
+                       datetime(created_at, 'localtime') as local_time
+                FROM detection_events
+                ORDER BY id DESC LIMIT ?
+            """
+            rows = conn.execute(query, (limit,)).fetchall()
+            
+        return [dict(r) for r in rows]
+
+def clear_detection_events():
+    """Clears all detection events and optionally cleans up event crop and snapshot files."""
+    with get_db() as conn:
+        with conn:
+            rows = conn.execute("SELECT crop_path, snapshot_path FROM detection_events").fetchall()
+            for r in rows:
+                for col in ("crop_path", "snapshot_path"):
+                    cp = r[col]
+                    if cp and os.path.exists(cp):
+                        try:
+                            os.remove(cp)
+                        except Exception:
+                            pass
+            conn.execute("DELETE FROM detection_events;")
+
+def get_detection_stats():
+    """Returns total count and unique persons count from detection events."""
+    with get_db() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM detection_events").fetchone()[0]
+        unique_p = conn.execute("SELECT COUNT(DISTINCT person_name) FROM detection_events").fetchone()[0]
+        latest_row = conn.execute("SELECT person_name, datetime(created_at, 'localtime') as lt FROM detection_events ORDER BY id DESC LIMIT 1").fetchone()
+        latest = f"{latest_row['person_name']} ({latest_row['lt']})" if latest_row else "Nema zabilježenih prolazaka"
+        return {
+            "total_events": total,
+            "unique_persons": unique_p,
+            "latest_event": latest
+        }
 
 def get_stats():
     with get_db() as conn:
