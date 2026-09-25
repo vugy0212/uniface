@@ -37,6 +37,20 @@ pip install "uniface[gpu]"          # NVIDIA CUDA
 pip install --pre "uniface[cpu]"    # latest pre-release
 ```
 
+### 🖥️ UniFace Studio (Local Web UI)
+
+UniFace Studio is an interactive Web UI with a local SQLite database for person registration, multi-face image tagging, and real-time recognition:
+
+```bash
+# Install Studio dependencies
+pip install -r requirements_studio.txt
+
+# Launch Studio (opens http://127.0.0.1:7860)
+python run_studio.py
+# Or double-click pokreni.bat / run_studio.bat on Windows
+```
+See [STUDIO_README.md](STUDIO_README.md) for detailed instructions.
+
 <details>
 <summary><b>A first script</b></summary>
 
