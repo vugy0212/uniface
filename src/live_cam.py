@@ -113,9 +113,18 @@ def run_live_camera(camera_idx=0, threshold=0.45, process_interval=2, device="CP
         print(f"[GRESKA] Ne mogu otvoriti kameru na indeksu {camera_idx}. Provjerite je li kamera spojena.")
         return False
         
+    # Set MJPG compression first to prevent USB 2.0 bandwidth freeze on Logitech C270
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'M', 'J', 'P', 'G'))
+    except Exception:
+        pass
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
+    # Warm up camera sensor and auto-exposure
+    for _ in range(5):
+        cap.read()
+        
     window_name = "UniFace Live Recognition - Logitech C270"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1280, 720)
