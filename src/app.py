@@ -749,6 +749,17 @@ def handle_import_backup(file_obj):
 def handle_refresh_sysinfo():
     return hardware.get_system_report_markdown(DATA_DIR)
 
+def handle_launch_live():
+    live_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_cam.py")
+    if not os.path.exists(live_script):
+        return "⚠️ Skripta `live_cam.py` nije pronađena."
+    try:
+        import subprocess
+        subprocess.Popen([sys.executable, live_script])
+        return "🎥 **Live kamera (Logitech C270) pokrenuta u zasebnom prozoru!**\n*(Za izlaz pritisnite tipku `Q` ili `ESC` u prozoru kamere)*"
+    except Exception as e:
+        return f"❌ Greška pri pokretanju kamere: {e}"
+
 # ---------------- GRADIO UI ----------------
 custom_theme = gr.themes.Soft(
     primary_hue="blue",
@@ -778,7 +789,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         with gr.TabItem("🔍 Prepoznavanje lica"):
             with gr.Row():
                 with gr.Column(scale=1):
-                    input_img = gr.Image(type="pil", label="Učitaj sliku za analizu (pojedinačna ili grupna)")
+                    input_img = gr.Image(
+                        type="pil",
+                        label="Učitaj sliku ili snimi web kamerom",
+                        sources=["upload", "webcam"]
+                    )
                     with gr.Accordion("⚙️ Napredne postavke analize", open=True):
                         threshold_slider = gr.Slider(
                             minimum=0.0,
@@ -792,7 +807,9 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             landmarks_chk = gr.Checkbox(value=False, label="Prikaži točke lica (Landmarks)")
                             blur_chk = gr.Checkbox(value=False, label="Zamućenje nepoznatih lica")
                             
-                    btn_recognize = gr.Button("🚀 Pokreni prepoznavanje", variant="primary", size="lg")
+                    with gr.Row():
+                        btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2)
+                        btn_launch_live = gr.Button("🎥 Pokreni Live Kameru (Prozor)", variant="secondary", scale=2)
                     
                 with gr.Column(scale=1):
                     annotated_out = gr.Image(type="numpy", label="Vizualni rezultat prepoznavanja")
@@ -865,7 +882,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                 
                             single_notes_input = gr.Textbox(label="Bilješke (opcionalno)", placeholder="npr. Član tima, IT odjel")
                             
-                            single_img_input = gr.Image(type="pil", label="Učitaj sliku (pojedinačna ili grupna fotografija)")
+                            single_img_input = gr.Image(
+                                type="pil",
+                                label="Učitaj sliku ili snimi web kamerom",
+                                sources=["upload", "webcam"]
+                            )
                             
                             single_annotated_preview = gr.Image(
                                 type="numpy",
@@ -1108,6 +1129,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         fn=recognize_faces,
         inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state]
+    )
+
+    btn_launch_live.click(
+        fn=handle_launch_live,
+        outputs=[rec_status_md]
     )
     
     crops_gallery_out.select(
