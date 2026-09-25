@@ -11,7 +11,9 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import face_engine
-from image_utils import imread_unicode, imwrite_unicode
+import hardware
+import backup
+from image_utils import imread_unicode, imwrite_unicode, save_image_dedup
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(APP_DIR, "data")
@@ -20,11 +22,18 @@ CROPS_DIR = os.path.join(DATA_DIR, "crops")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(CROPS_DIR, exist_ok=True)
 
-_last_recognized_faces = []
-_current_single_faces = []
-_current_single_bgr = None
-_current_single_selected_idx = 1
-_current_saved_face_indices = set()
+def _get_single_state(state):
+    if not isinstance(state, dict):
+        return {"faces": [], "bgr": None, "selected_idx": 1, "saved_indices": set()}
+    if "faces" not in state:
+        state["faces"] = []
+    if "bgr" not in state:
+        state["bgr"] = None
+    if "selected_idx" not in state:
+        state["selected_idx"] = 1
+    if "saved_indices" not in state or not isinstance(state["saved_indices"], set):
+        state["saved_indices"] = set()
+    return state
 
 def get_person_dropdown_choices(filter_query=""):
     persons = db.get_all_persons()
@@ -35,6 +44,10 @@ def get_person_dropdown_choices(filter_query=""):
             if query in p["name"].lower() or query == str(p["id"]) or query in (p["notes"] or "").lower()
         ]
     return [f"{p['id']}: {p['name']} ({p['sample_count']} slika)" for p in persons]
+
+def update_both_person_dropdowns():
+    choices = get_person_dropdown_choices()
+    return gr.update(choices=choices), gr.update(choices=choices)
 
 def clean_filename_to_name(filename: str) -> str:
     base = os.path.splitext(os.path.basename(filename))[0]
@@ -80,24 +93,20 @@ def refresh_database_view(search_query=""):
 
 # ---------------- PREPOZNAVANJE ----------------
 def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
-    global _last_recognized_faces
     if image is None:
-        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None)
+        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), []
     
     img_bgr, err = imread_unicode(image)
     if img_bgr is None:
-        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None)
+        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), []
         
-    all_embeddings = db.get_all_embeddings()
     annotated_bgr, results = face_engine.process_and_annotate(
         img_bgr,
-        all_embeddings,
         threshold=float(threshold),
         draw_landmarks=bool(draw_landmarks),
         blur_unknown=bool(blur_unknown)
     )
     
-    _last_recognized_faces = results
     annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
     
     table_data = []
@@ -134,35 +143,34 @@ def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
     
     summary = f"🔍 Pronađeno lica: **{len(results)}** | ✅ Prepoznato: **{num_recognized}** | ⚠️ Moguće (ispod praga): **{num_possible}** | ❌ Nepoznato: **{num_unknown}**"
     dropdown_update = gr.update(choices=candidate_choices, value=candidate_choices[0] if candidate_choices else None)
-    return annotated_rgb, crops_gallery, table_data, summary, dropdown_update
+    return annotated_rgb, crops_gallery, table_data, summary, dropdown_update, results
 
-def on_recognition_gallery_click(evt: gr.SelectData):
-    global _last_recognized_faces
-    if evt.index is not None and 0 <= evt.index < len(_last_recognized_faces):
-        r = _last_recognized_faces[evt.index]
+def on_recognition_gallery_click(evt: gr.SelectData, rec_faces):
+    faces = rec_faces or []
+    if evt.index is not None and 0 <= evt.index < len(faces):
+        r = faces[evt.index]
         face_choice = f"[#{r['index']}] {r['best_name']} ({r['similarity']})"
         default_name = r["best_name"] if r["best_name"] != "Nepoznato" else ""
         return gr.update(value=face_choice), gr.update(value=default_name)
     return gr.update(), gr.update()
 
-def quick_add_face_to_db(selected_face_str, new_name):
-    global _last_recognized_faces
+def quick_add_face_to_db(selected_face_str, new_name, rec_faces):
     if not selected_face_str:
-        return "⚠️ Niste odabrali lice sa slike.", gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1]
+        return "⚠️ Niste odabrali lice sa slike.", gr.update(), gr.update(), gr.update(), gr.update()
     if not new_name or not new_name.strip():
-        return "⚠️ Morate unijeti ime osobe.", gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1]
+        return "⚠️ Morate unijeti ime osobe.", gr.update(), gr.update(), gr.update(), gr.update()
     
     try:
         f_num = int(selected_face_str.split(']')[0].replace('[#', '').strip())
         target_face = None
-        for f in _last_recognized_faces:
+        for f in (rec_faces or []):
             if f["index"] == f_num:
                 target_face = f
                 break
         if not target_face:
-            return "❌ Odabrano lice više nije dostupno.", gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1]
+            return "❌ Odabrano lice više nije dostupno.", gr.update(), gr.update(), gr.update(), gr.update()
     except Exception as e:
-        return f"❌ Pogrešan format odabira ({e})", gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1]
+        return f"❌ Pogrešan format odabira ({e})", gr.update(), gr.update(), gr.update(), gr.update()
         
     person_name = new_name.strip()
     person_id = db.get_or_create_person(person_name)
@@ -263,87 +271,89 @@ def build_face_choices_and_gallery(faces, selected_index=1, saved_indices=None):
         
     return choices, gallery, selected_choice
 
-def set_active_face(target_index):
-    global _current_single_faces, _current_single_bgr, _current_single_selected_idx, _current_saved_face_indices
-    if not _current_single_faces or _current_single_bgr is None:
-        return None, None, "Nema učitanih lica.", gr.update()
+def set_active_face(target_index, state):
+    state = _get_single_state(state)
+    faces = state["faces"]
+    bgr = state["bgr"]
+    saved = state["saved_indices"]
+    if not faces or bgr is None:
+        return None, None, "Nema učitanih lica.", gr.update(), state
         
     valid_face = None
-    for f in _current_single_faces:
+    for f in faces:
         if f["display_index"] == target_index:
             valid_face = f
             break
             
     if not valid_face:
-        valid_face = _current_single_faces[0]
+        valid_face = faces[0]
         target_index = valid_face["display_index"]
         
-    _current_single_selected_idx = target_index
+    state["selected_idx"] = target_index
     
     annotated_rgb = render_annotated_group_image(
-        _current_single_bgr, _current_single_faces,
+        bgr, faces,
         selected_index=target_index,
-        saved_indices=_current_saved_face_indices
+        saved_indices=saved
     )
     
     crop_rgb = cv2.cvtColor(valid_face["crop_bgr"], cv2.COLOR_BGR2RGB)
     
-    status_str = " (već spremljeno u bazu)" if target_index in _current_saved_face_indices else ""
+    status_str = " (već spremljeno u bazu)" if target_index in saved else ""
     info = f"🎯 Trenutno odabrano: **Lice #{target_index}**{status_str}."
     if valid_face.get("age") is not None:
         info += f" | Procjena dobi: ~{int(valid_face['age'])} god, Spol: {valid_face['gender']}"
         
     choices, _, sel_choice = build_face_choices_and_gallery(
-        _current_single_faces,
+        faces,
         selected_index=target_index,
-        saved_indices=_current_saved_face_indices
+        saved_indices=saved
     )
     
-    return annotated_rgb, crop_rgb, info, gr.update(value=sel_choice)
+    return annotated_rgb, crop_rgb, info, gr.update(value=sel_choice), state
 
-def on_single_image_uploaded(image):
-    global _current_single_faces, _current_single_bgr, _current_single_selected_idx, _current_saved_face_indices
-    _current_saved_face_indices = set()
+def on_single_image_uploaded(image, state):
+    new_state = {"faces": [], "bgr": None, "selected_idx": 1, "saved_indices": set()}
     if image is None:
-        _current_single_faces = []
-        _current_single_bgr = None
-        _current_single_selected_idx = 1
         return (
-            None, [], gr.update(choices=[], value=None, visible=False),
+            gr.update(value=None, visible=False),
+            gr.update(value=[], visible=False),
+            gr.update(choices=[], value=None, visible=False),
             None, "Učitajte fotografiju za automatsku detekciju lica.",
-            gr.update(visible=False), gr.update(visible=False)
+            new_state
         )
         
     img_bgr, err = imread_unicode(image)
     if img_bgr is None:
-        _current_single_faces = []
-        _current_single_bgr = None
         return (
-            None, [], gr.update(choices=[], value=None, visible=False),
+            gr.update(value=None, visible=False),
+            gr.update(value=[], visible=False),
+            gr.update(choices=[], value=None, visible=False),
             None, f"❌ Greška pri čitanju slike: {err}",
-            gr.update(visible=False), gr.update(visible=False)
+            new_state
         )
         
     faces = face_engine.extract_faces_from_image(img_bgr)
     if not faces:
-        _current_single_faces = []
-        _current_single_bgr = None
         return (
-            None, [], gr.update(choices=[], value=None, visible=False),
+            gr.update(value=None, visible=False),
+            gr.update(value=[], visible=False),
+            gr.update(choices=[], value=None, visible=False),
             None, "⚠️ Na slici NIJE pronađeno lice. Pokušajte s jasnijom slikom.",
-            gr.update(visible=False), gr.update(visible=False)
+            new_state
         )
         
     faces.sort(key=lambda f: f["bbox"][0])
     for i, f in enumerate(faces):
         f["display_index"] = i + 1
         
-    _current_single_bgr = img_bgr
-    _current_single_faces = faces
-    _current_single_selected_idx = 1
+    new_state["bgr"] = img_bgr
+    new_state["faces"] = faces
+    new_state["selected_idx"] = 1
+    new_state["saved_indices"] = set()
     
-    annotated_rgb = render_annotated_group_image(img_bgr, faces, selected_index=1, saved_indices=_current_saved_face_indices)
-    choices, gallery, sel_choice = build_face_choices_and_gallery(faces, selected_index=1, saved_indices=_current_saved_face_indices)
+    annotated_rgb = render_annotated_group_image(img_bgr, faces, selected_index=1, saved_indices=new_state["saved_indices"])
+    choices, gallery, sel_choice = build_face_choices_and_gallery(faces, selected_index=1, saved_indices=new_state["saved_indices"])
     
     f1 = faces[0]
     crop1_rgb = cv2.cvtColor(f1["crop_bgr"], cv2.COLOR_BGR2RGB)
@@ -352,131 +362,136 @@ def on_single_image_uploaded(image):
         info1 += f" | Procjena dobi: ~{int(f1['age'])} god, Spol: {f1['gender']}"
         
     return (
-        annotated_rgb,
-        gallery,
+        gr.update(value=annotated_rgb, visible=True),
+        gr.update(value=gallery, visible=True),
         gr.update(choices=choices, value=sel_choice, visible=True),
         crop1_rgb,
         info1,
-        gr.update(visible=True),
-        gr.update(visible=True)
+        new_state
     )
 
-def on_radio_face_change(choice_str):
+def on_radio_face_change(choice_str, state):
+    state = _get_single_state(state)
     if not choice_str:
-        return gr.update(), gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), gr.update(), state
     try:
         idx = int(str(choice_str).split("#")[1].split(" ")[0].strip())
-        return set_active_face(idx)
+        return set_active_face(idx, state)
     except Exception:
-        return gr.update(), gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), gr.update(), state
 
-def on_crop_gallery_select(evt: gr.SelectData):
-    global _current_single_faces
-    if evt.index is not None and 0 <= evt.index < len(_current_single_faces):
+def on_crop_gallery_select(evt: gr.SelectData, state):
+    state = _get_single_state(state)
+    faces = state["faces"]
+    if evt.index is not None and 0 <= evt.index < len(faces):
         idx = evt.index + 1
-        return set_active_face(idx)
-    return gr.update(), gr.update(), gr.update(), gr.update()
+        return set_active_face(idx, state)
+    return gr.update(), gr.update(), gr.update(), gr.update(), state
 
-def on_single_image_click(evt: gr.SelectData):
-    global _current_single_faces
-    if not _current_single_faces or not evt.index:
-        return gr.update(), gr.update(), gr.update(), gr.update()
+def on_single_image_click(evt: gr.SelectData, state):
+    state = _get_single_state(state)
+    faces = state["faces"]
+    if not faces or not evt.index:
+        return gr.update(), gr.update(), gr.update(), gr.update(), state
     try:
         x, y = evt.index[0], evt.index[1]
-        f = find_face_at_coords(x, y, _current_single_faces)
+        f = find_face_at_coords(x, y, faces)
         if f:
-            return set_active_face(f["display_index"])
+            return set_active_face(f["display_index"], state)
     except Exception:
         pass
-    return gr.update(), gr.update(), gr.update(), gr.update()
+    return gr.update(), gr.update(), gr.update(), gr.update(), state
 
-def save_single_person(name, notes, face_choice_str):
-    global _current_single_faces, _current_single_bgr, _current_single_selected_idx, _current_saved_face_indices
+def save_single_person(name, notes, face_choice_str, state):
+    state = _get_single_state(state)
+    faces = state["faces"]
+    bgr = state["bgr"]
+    saved = state["saved_indices"]
+    
     if not name or not name.strip():
         return (
             "⚠️ Ime osobe je obavezno!",
-            gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1],
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            state
         )
-    if not _current_single_faces:
+    if not faces:
         return (
             "⚠️ Niste učitali sliku ili na slici nema lica!",
-            gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1],
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            state
         )
         
-    target_idx = _current_single_selected_idx
+    target_idx = state.get("selected_idx", 1)
     if face_choice_str:
         try:
             target_idx = int(str(face_choice_str).split("#")[1].split(" ")[0].strip())
         except Exception:
-            target_idx = _current_single_selected_idx
+            target_idx = state.get("selected_idx", 1)
             
     target_face = None
-    for f in _current_single_faces:
+    for f in faces:
         if f["display_index"] == target_idx:
             target_face = f
             break
     if not target_face:
-        target_face = _current_single_faces[0]
+        target_face = faces[0]
         target_idx = target_face["display_index"]
         
     person_name = name.strip()
     person_id = db.get_or_create_person(person_name, notes or "")
     
-    orig_filename = f"orig_{person_id}_{uuid.uuid4().hex[:8]}.jpg"
-    orig_path = os.path.join(UPLOADS_DIR, orig_filename)
-    if _current_single_bgr is not None:
-        imwrite_unicode(orig_path, _current_single_bgr)
-    else:
-        imwrite_unicode(orig_path, target_face["crop_bgr"])
+    orig_img_to_save = bgr if bgr is not None else target_face["crop_bgr"]
+    orig_path = save_image_dedup(orig_img_to_save, UPLOADS_DIR, prefix="orig")
         
     crop_filename = f"crop_{person_id}_{uuid.uuid4().hex[:8]}.jpg"
     crop_path = os.path.join(CROPS_DIR, crop_filename)
     imwrite_unicode(crop_path, target_face["crop_bgr"])
     
     db.add_face_sample(person_id, orig_path, crop_path, target_face["embedding"], target_face["confidence"])
-    _current_saved_face_indices.add(target_idx)
+    saved.add(target_idx)
+    state["saved_indices"] = saved
     
     samples = db.get_person_samples(person_id)
     choices_db = get_person_dropdown_choices()
     table_view, stats_view = refresh_database_view()
     
     next_idx = None
-    for f in _current_single_faces:
-        if f["display_index"] not in _current_saved_face_indices:
+    for f in faces:
+        if f["display_index"] not in saved:
             next_idx = f["display_index"]
             break
             
     if next_idx is not None:
-        _current_single_selected_idx = next_idx
+        state["selected_idx"] = next_idx
         msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}**! Sada upišite ime za sljedeću osobu (**Lice #{next_idx}**)."
     else:
-        msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}**! Sva lica sa slike ({len(_current_single_faces)}) su unesena u bazu!"
+        msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}**! Sva lica sa slike ({len(faces)}) su unesena u bazu!"
         
     annotated_rgb = render_annotated_group_image(
-        _current_single_bgr, _current_single_faces,
-        selected_index=_current_single_selected_idx,
-        saved_indices=_current_saved_face_indices
+        bgr, faces,
+        selected_index=state["selected_idx"],
+        saved_indices=saved
     )
     
     new_choices, new_gallery, sel_choice = build_face_choices_and_gallery(
-        _current_single_faces,
-        selected_index=_current_single_selected_idx,
-        saved_indices=_current_saved_face_indices
+        faces,
+        selected_index=state["selected_idx"],
+        saved_indices=saved
     )
     
     active_face = None
-    for f in _current_single_faces:
-        if f["display_index"] == _current_single_selected_idx:
+    for f in faces:
+        if f["display_index"] == state["selected_idx"]:
             active_face = f
             break
     if not active_face:
         active_face = target_face
         
     crop_rgb = cv2.cvtColor(active_face["crop_bgr"], cv2.COLOR_BGR2RGB)
-    status_str = " (već spremljeno)" if _current_single_selected_idx in _current_saved_face_indices else ""
-    info = f"🎯 Trenutno odabrano: **Lice #{_current_single_selected_idx}**{status_str}."
+    status_str = " (već spremljeno)" if state["selected_idx"] in saved else ""
+    info = f"🎯 Trenutno odabrano: **Lice #{state['selected_idx']}**{status_str}."
     if active_face.get("age") is not None:
         info += f" | Procjena dobi: ~{int(active_face['age'])} god, Spol: {active_face['gender']}"
         
@@ -491,28 +506,27 @@ def save_single_person(name, notes, face_choice_str):
         info,
         gr.update(choices=new_choices, value=sel_choice),
         "",  # clear name field so user can type next person's name
-        new_gallery
+        new_gallery,
+        state
     )
 
 def clear_single_form():
-    global _current_single_faces, _current_single_bgr, _current_single_selected_idx, _current_saved_face_indices
-    _current_single_faces = []
-    _current_single_bgr = None
-    _current_single_selected_idx = 1
-    _current_saved_face_indices = set()
+    empty_state = {"faces": [], "bgr": None, "selected_idx": 1, "saved_indices": set()}
     return (
-        "", "", None, None, [],
+        "", "", None,
+        gr.update(value=None, visible=False),
+        gr.update(value=[], visible=False),
         gr.update(choices=[], value=None, visible=False),
         None, "Učitajte fotografiju za automatsku detekciju lica.",
         "💾 Spremi odabrano lice u bazu", "Formular očišćen za novu osobu.",
-        gr.update(visible=False), gr.update(visible=False),
-        gr.update(value=None)
+        gr.update(value=None),
+        empty_state
     )
 
 # ---------------- MASOVNI (BATCH) UNOS ----------------
 def batch_enroll_files(naming_mode, single_name, files):
     if not files:
-        return "⚠️ Niste odabrali datoteke za unos.", gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1]
+        return "⚠️ Niste odabrali datoteke za unos.", gr.update(), gr.update(), gr.update(), gr.update()
         
     success_list = []
     fail_list = []
@@ -526,7 +540,7 @@ def batch_enroll_files(naming_mode, single_name, files):
             fail_list.append(f"{base_display_name} (neispravna slika: {err})")
             continue
             
-        faces = face_engine.extract_faces_from_image(img_bgr)
+        faces = face_engine.extract_faces_from_image(img_bgr, with_attributes=False)
         if not faces:
             fail_list.append(f"{base_display_name} (lice nije detektirano)")
             continue
@@ -538,14 +552,12 @@ def batch_enroll_files(naming_mode, single_name, files):
             person_name = clean_filename_to_name(base_display_name)
         else:
             if not single_name or not single_name.strip():
-                return "⚠️ Morate upisati ime osobe za sve slike.", gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1]
+                return "⚠️ Morate upisati ime osobe za sve slike.", gr.update(), gr.update(), gr.update(), gr.update()
             person_name = single_name.strip()
             
         person_id = db.get_or_create_person(person_name)
         
-        orig_filename = f"orig_{person_id}_{uuid.uuid4().hex[:8]}.jpg"
-        orig_path = os.path.join(UPLOADS_DIR, orig_filename)
-        imwrite_unicode(orig_path, img_bgr)
+        orig_path = save_image_dedup(img_bgr, UPLOADS_DIR, prefix="orig")
         
         crop_filename = f"crop_{person_id}_{uuid.uuid4().hex[:8]}.jpg"
         crop_path = os.path.join(CROPS_DIR, crop_filename)
@@ -690,7 +702,7 @@ def on_table_search_clear():
 def delete_selected_person(selected_person_str):
     person_id = parse_person_id(selected_person_str)
     if person_id is None:
-        return "⚠️ Niste odabrali osobu.", gr.update(), gr.update(), refresh_database_view()[0], refresh_database_view()[1], [], ""
+        return "⚠️ Niste odabrali osobu.", gr.update(), gr.update(), gr.update(), gr.update(), [], ""
         
     p = db.get_person(person_id)
     if p:
@@ -716,6 +728,27 @@ def delete_selected_sample(selected_sample_str, selected_person_str):
     gallery, info, choice_upd = view_person_details(selected_person_str)
     return msg, gallery, info
 
+# ---------------- BACKUP & HARDWARE HANDLERS ----------------
+def handle_export_backup():
+    try:
+        zip_path = backup.export_database_zip(DATA_DIR)
+        filename = os.path.basename(zip_path)
+        return zip_path, f"✅ **Sigurnosna kopija uspješno generirana:** `{filename}`"
+    except Exception as e:
+        return None, f"❌ **Greška pri izvozu:** {e}"
+
+def handle_import_backup(file_obj):
+    if not file_obj:
+        return "⚠️ Niste odabrali ZIP datoteku za uvoz.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    success, msg = backup.import_database_zip(file_obj, DATA_DIR)
+    table_view, stats_view = refresh_database_view()
+    choices = get_person_dropdown_choices()
+    sys_report = hardware.get_system_report_markdown(DATA_DIR)
+    return msg, table_view, stats_view, gr.update(choices=choices, value=None), gr.update(choices=choices, value=None), sys_report
+
+def handle_refresh_sysinfo():
+    return hardware.get_system_report_markdown(DATA_DIR)
+
 # ---------------- GRADIO UI ----------------
 custom_theme = gr.themes.Soft(
     primary_hue="blue",
@@ -724,6 +757,15 @@ custom_theme = gr.themes.Soft(
 )
 
 with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
+    # Per-session state (eliminates global variables and multi-user race conditions)
+    rec_faces_state = gr.State([])
+    single_enroll_state = gr.State({
+        "faces": [],
+        "bgr": None,
+        "selected_idx": 1,
+        "saved_indices": set()
+    })
+
     gr.Markdown(
         """
         # 👤 UniFace - Biometrijski Sustav za Prepoznavanje Lica
@@ -923,22 +965,38 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         btn_delete_sample = gr.Button("Obriši odabranu sliku", variant="secondary")
                     sample_action_status = gr.Markdown("")
 
-        # ------------------ TAB 3: O SUSTAVU & UPUTE ------------------
-        with gr.TabItem("ℹ️ O Sustavu i Hardveru"):
-            gr.Markdown(
-                """
-                ### 💻 Hardverska konfiguracija računala
-                * **Grafička kartica (GPU):** NVIDIA GeForce RTX 4060 (8 GB VRAM)
-                * **Radna memorija (RAM):** 32 GB RAM
-                * **Operativni sustav:** Windows 11 Pro 64-bit
-                * **Lokalna pohrana baze:** SQLite (`data/database.db`) + lokalna mapa za izrezana lica
-                
-                ### 🎯 Sustav za maksimalnu točnost (Centroid Multi-Sample)
-                * **Sintetizirani biometrijski profil (Centroid):** Kada za osobu unesete više slika (npr. 2, 3 ili 4 različita kuta), sustav spaja njihove 512-dimenzionalne vektore u optimalni 'središnji' model osobe.
-                * **Hibridno bodovanje:** Usporedba uzima u obzir i najbolji kut i cjelokupni centroid, čime se eliminiraju lažni pozitivni rezultati i znatno povećava točnost na grupnim slikama s otežanim osvjetljenjem.
-                * **Sigurnosna margina:** Prikazuje razliku u postotku između najizglednijeg kandidata i drugog najboljeg, što daje jasan uvid u pouzdanost prepoznavanja.
-                """
-            )
+        # ------------------ TAB 3: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
+        with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    system_info_md = gr.Markdown(hardware.get_system_report_markdown(DATA_DIR))
+                    btn_refresh_sysinfo = gr.Button("🔄 Osvježi podatke o sustavu", size="sm")
+                    
+                    gr.Markdown("---")
+                    gr.Markdown(
+                        """
+                        ### 🎯 Sustav za maksimalnu točnost (Centroid Multi-Sample)
+                        * **Sintetizirani biometrijski profil (Centroid):** Kada za osobu unesete više slika (npr. 2, 3 ili 4 različita kuta), sustav spaja njihove 512-dimenzionalne vektore u optimalni 'središnji' model osobe.
+                        * **Hibridno bodovanje:** Usporedba uzima u obzir i najbolji kut i cjelokupni centroid, čime se eliminiraju lažni pozitivni rezultati i znatno povećava točnost na grupnim slikama s otežanim osvjetljenjem.
+                        * **Sigurnosna margina:** Prikazuje razliku u postotku između najizglednijeg kandidata i drugog najboljeg, što daje jasan uvid u pouzdanost prepoznavanja.
+                        """
+                    )
+                with gr.Column(scale=1):
+                    gr.Markdown("### 📦 Sigurnosna kopija i arhiviranje baze")
+                    gr.Markdown("Izvezite cjelokupnu bazu podataka (`database.db`), biometrijske vektore i fotografije lica u ZIP arhivu ili obnovite bazu iz postojeće arhive.")
+                    
+                    with gr.Group():
+                        gr.Markdown("#### 💾 Izvoz sigurnosne kopije (Export)")
+                        btn_export_backup = gr.Button("📦 Kreiraj i preuzmi sigurnosnu kopiju (ZIP)", variant="primary")
+                        backup_download_file = gr.File(label="Preuzmite ZIP arhivu", interactive=False)
+                        backup_export_status = gr.Markdown("")
+                        
+                    with gr.Group():
+                        gr.Markdown("#### 📥 Vraćanje sigurnosne kopije (Restore / Import)")
+                        backup_upload_file = gr.File(label="Prenesite ZIP arhivu za uvoz", file_types=[".zip"], file_count="single")
+                        btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
+                        backup_import_status = gr.Markdown("")
+
 
     # ------------------ EVENT HANDLERS ------------------
     batch_naming_mode.change(
@@ -950,41 +1008,42 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     # 1. Image uploaded in Single Enroll -> extracts faces and renders visual indicators
     single_img_input.change(
         fn=on_single_image_uploaded,
-        inputs=[single_img_input],
+        inputs=[single_img_input, single_enroll_state],
         outputs=[
             single_annotated_preview,
             single_crops_gallery,
             single_face_selector,
             single_preview_crop,
             single_preview_info,
-            single_annotated_preview,
-            single_crops_gallery
+            single_enroll_state
         ]
     )
     
     # 2. Click directly on photo
     single_annotated_preview.select(
         fn=on_single_image_click,
-        outputs=[single_annotated_preview, single_preview_crop, single_preview_info, single_face_selector]
+        inputs=[single_enroll_state],
+        outputs=[single_annotated_preview, single_preview_crop, single_preview_info, single_face_selector, single_enroll_state]
     )
     
     # 3. Radio button selector change
     single_face_selector.change(
         fn=on_radio_face_change,
-        inputs=[single_face_selector],
-        outputs=[single_annotated_preview, single_preview_crop, single_preview_info, single_face_selector]
+        inputs=[single_face_selector, single_enroll_state],
+        outputs=[single_annotated_preview, single_preview_crop, single_preview_info, single_face_selector, single_enroll_state]
     )
     
     # 4. Gallery thumbnail click selector
     single_crops_gallery.select(
         fn=on_crop_gallery_select,
-        outputs=[single_annotated_preview, single_preview_crop, single_preview_info, single_face_selector]
+        inputs=[single_enroll_state],
+        outputs=[single_annotated_preview, single_preview_crop, single_preview_info, single_face_selector, single_enroll_state]
     )
     
     # 5. Save single face -> advances to next unsaved face & clears name field
     btn_save_single.click(
         fn=save_single_person,
-        inputs=[single_name_input, single_notes_input, single_face_selector],
+        inputs=[single_name_input, single_notes_input, single_face_selector, single_enroll_state],
         outputs=[
             single_save_status,
             manage_person_dropdown,
@@ -996,7 +1055,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_preview_info,
             single_face_selector,
             single_name_input,
-            single_crops_gallery
+            single_crops_gallery,
+            single_enroll_state
         ]
     ).then(
         fn=view_person_details,
@@ -1008,9 +1068,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     btn_clear_form.click(
         fn=clear_single_form,
         outputs=[
-            single_name_input, single_notes_input, single_img_input, single_annotated_preview, single_crops_gallery,
-            single_face_selector, single_preview_crop, single_preview_info, btn_save_single, single_save_status,
-            single_annotated_preview, single_crops_gallery, existing_person_picker
+            single_name_input, single_notes_input, single_img_input,
+            single_annotated_preview, single_crops_gallery,
+            single_face_selector, single_preview_crop, single_preview_info,
+            btn_save_single, single_save_status,
+            existing_person_picker, single_enroll_state
         ]
     )
     
@@ -1045,17 +1107,18 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     btn_recognize.click(
         fn=recognize_faces,
         inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
-        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown]
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state]
     )
     
     crops_gallery_out.select(
         fn=on_recognition_gallery_click,
+        inputs=[rec_faces_state],
         outputs=[unknown_face_dropdown, quick_name_input]
     )
     
     btn_quick_add.click(
         fn=quick_add_face_to_db,
-        inputs=[unknown_face_dropdown, quick_name_input],
+        inputs=[unknown_face_dropdown, quick_name_input, rec_faces_state],
         outputs=[quick_add_status, manage_person_dropdown, existing_person_picker, db_table, db_stats_md]
     )
     
@@ -1063,7 +1126,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         fn=refresh_database_view,
         outputs=[db_table, db_stats_md]
     ).then(
-        fn=lambda: (gr.update(choices=get_person_dropdown_choices()), gr.update(choices=get_person_dropdown_choices())),
+        fn=update_both_person_dropdowns,
         outputs=[manage_person_dropdown, existing_person_picker]
     )
     
@@ -1099,11 +1162,34 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[db_table, db_stats_md]
     )
 
+    btn_refresh_sysinfo.click(
+        fn=handle_refresh_sysinfo,
+        outputs=[system_info_md]
+    )
+
+    btn_export_backup.click(
+        fn=handle_export_backup,
+        outputs=[backup_download_file, backup_export_status]
+    )
+
+    btn_import_backup.click(
+        fn=handle_import_backup,
+        inputs=[backup_upload_file],
+        outputs=[
+            backup_import_status,
+            db_table,
+            db_stats_md,
+            manage_person_dropdown,
+            existing_person_picker,
+            system_info_md
+        ]
+    )
+
     demo.load(
         fn=refresh_database_view,
         outputs=[db_table, db_stats_md]
     ).then(
-        fn=lambda: (gr.update(choices=get_person_dropdown_choices()), gr.update(choices=get_person_dropdown_choices())),
+        fn=update_both_person_dropdowns,
         outputs=[manage_person_dropdown, existing_person_picker]
     )
 

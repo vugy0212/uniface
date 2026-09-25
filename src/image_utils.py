@@ -71,3 +71,27 @@ def imwrite_unicode(path: str, img_bgr: np.ndarray) -> bool:
         return False
     except Exception:
         return False
+
+def compute_image_hash(img_bgr: np.ndarray) -> str:
+    """
+    Computes a deterministic SHA-256 hash based on image dimensions and pixel data.
+    Fast and robust against duplicate image files.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    h.update(str(img_bgr.shape).encode("utf-8"))
+    h.update(img_bgr.tobytes())
+    return h.hexdigest()
+
+def save_image_dedup(img_bgr: np.ndarray, target_dir: str, prefix: str = "orig") -> str:
+    """
+    Saves an image into target_dir using content-based addressing (SHA-256).
+    If an identical image is already stored, returns the existing file path to prevent disk waste.
+    """
+    os.makedirs(target_dir, exist_ok=True)
+    img_hash = compute_image_hash(img_bgr)[:16]
+    filename = f"{prefix}_{img_hash}.jpg"
+    target_path = os.path.join(target_dir, filename)
+    if not os.path.exists(target_path):
+        imwrite_unicode(target_path, img_bgr)
+    return target_path

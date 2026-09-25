@@ -3,23 +3,41 @@ import cv2
 import numpy as np
 from uniface import FaceAnalyzer, RetinaFace, ArcFace, FairFace
 
-_analyzer = None
+_analyzer_with_attr = None
+_analyzer_base = None
 
-def get_analyzer(device="CPU"):
-    global _analyzer
-    if _analyzer is None:
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device.upper() == "CUDA" else ["CPUExecutionProvider"]
-        try:
-            detector = RetinaFace(confidence_threshold=0.45, providers=providers)
-            recognizer = ArcFace(providers=providers)
-            predictor = FairFace(providers=providers)
-            _analyzer = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[predictor])
-        except Exception:
-            detector = RetinaFace(confidence_threshold=0.45, providers=["CPUExecutionProvider"])
-            recognizer = ArcFace(providers=["CPUExecutionProvider"])
-            predictor = FairFace(providers=["CPUExecutionProvider"])
-            _analyzer = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[predictor])
-    return _analyzer
+def get_analyzer(device="CPU", with_attributes=True):
+    """
+    Returns FaceAnalyzer. When with_attributes=False, FairFace model is NOT loaded,
+    saving ~300 MB of RAM and speeding up batch face embedding extraction.
+    """
+    global _analyzer_with_attr, _analyzer_base
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device.upper() == "CUDA" else ["CPUExecutionProvider"]
+    
+    if with_attributes:
+        if _analyzer_with_attr is None:
+            try:
+                detector = RetinaFace(confidence_threshold=0.45, providers=providers)
+                recognizer = ArcFace(providers=providers)
+                predictor = FairFace(providers=providers)
+                _analyzer_with_attr = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[predictor])
+            except Exception:
+                detector = RetinaFace(confidence_threshold=0.45, providers=["CPUExecutionProvider"])
+                recognizer = ArcFace(providers=["CPUExecutionProvider"])
+                predictor = FairFace(providers=["CPUExecutionProvider"])
+                _analyzer_with_attr = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[predictor])
+        return _analyzer_with_attr
+    else:
+        if _analyzer_base is None:
+            try:
+                detector = RetinaFace(confidence_threshold=0.45, providers=providers)
+                recognizer = ArcFace(providers=providers)
+                _analyzer_base = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
+            except Exception:
+                detector = RetinaFace(confidence_threshold=0.45, providers=["CPUExecutionProvider"])
+                recognizer = ArcFace(providers=["CPUExecutionProvider"])
+                _analyzer_base = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
+        return _analyzer_base
 
 def crop_face(image: np.ndarray, bbox, margin_ratio=0.25):
     h, w = image.shape[:2]
@@ -35,8 +53,8 @@ def crop_face(image: np.ndarray, bbox, margin_ratio=0.25):
     
     return image[y1:y2, x1:x2].copy()
 
-def extract_faces_from_image(image_bgr: np.ndarray, device="CPU"):
-    analyzer = get_analyzer(device)
+def extract_faces_from_image(image_bgr: np.ndarray, device="CPU", with_attributes=True):
+    analyzer = get_analyzer(device, with_attributes=with_attributes)
     faces = analyzer.analyze(image_bgr)
     
     extracted = []
@@ -110,87 +128,187 @@ def build_person_profiles(all_samples: list[dict]) -> dict:
             
     return profiles
 
-def match_face(query_embedding: np.ndarray, profiles: dict, threshold=0.50):
-    if not profiles or query_embedding is None:
-        return {
-            "matched": False,
-            "best_name": "Baza je prazna",
-            "similarity": 0.0,
-            "person_id": None,
-            "status": "Nema baze",
-            "quality_icon": "⚪",
-            "quality_badge": "Nema uzoraka",
-            "margin": 0.0,
-            "crop_path": None
-        }
-    
-    q_norm = np.linalg.norm(query_embedding)
-    if q_norm > 0:
-        query_embedding = query_embedding / q_norm
-        
-    candidate_scores = []
-    
-    for pid, p in profiles.items():
-        # 1. Similarity to each individual sample
-        sample_sims = [float(np.dot(query_embedding, s)) for s in p["samples"]]
-        max_sim = max(sample_sims) if sample_sims else 0.0
-        
-        # 2. Similarity to centroid (smoothed multi-angle synthesized model)
-        centroid_sim = float(np.dot(query_embedding, p["centroid"]))
-        
-        # 3. Hybrid metric:
-        # If multiple samples exist, we blend the best individual angle and the centroid.
-        # This increases true match confidence and filters out impostors.
-        if p["count"] > 1:
-            effective_sim = max(max_sim * 0.96, centroid_sim, 0.45 * max_sim + 0.55 * centroid_sim)
-        else:
-            effective_sim = max_sim
-            
-        candidate_scores.append({
-            "person_id": pid,
-            "person_name": p["person_name"],
-            "similarity": max(0.0, effective_sim),
-            "max_sample_sim": max(0.0, max_sim),
-            "centroid_sim": max(0.0, centroid_sim),
-            "count": p["count"],
-            "quality_badge": p["quality_badge"],
-            "quality_icon": p["quality_icon"],
-            "crop_path": p["crop_path"]
-        })
-        
-    candidate_scores.sort(key=lambda x: x["similarity"], reverse=True)
-    best = candidate_scores[0]
-    second_sim = candidate_scores[1]["similarity"] if len(candidate_scores) > 1 else 0.0
-    margin = best["similarity"] - second_sim
-    
-    matched = (best["similarity"] >= threshold)
-    if matched:
-        status = "Prepoznat"
-    elif best["similarity"] >= 0.38:
-        status = "Moguće poklapanje"
-    else:
-        status = "Nepoznat"
-        
-    return {
-        "matched": matched,
-        "best_name": best["person_name"],
-        "person_id": best["person_id"],
-        "similarity": best["similarity"],
-        "status": status,
-        "quality_icon": best["quality_icon"],
-        "quality_badge": best["quality_badge"],
-        "sample_count": best["count"],
-        "margin": margin,
-        "crop_path": best["crop_path"]
-    }
+class FaceIndex:
+    """
+    High-performance vectorized face search index.
+    Stacks samples and centroids into normalized matrices and uses BLAS (@)
+    for sub-millisecond similarity calculations across thousands of faces.
+    """
+    def __init__(self, all_samples: list[dict]):
+        self.profiles = build_person_profiles(all_samples)
+        self.person_ids = list(self.profiles.keys())
+        self.total_samples = len(all_samples)
+        self.num_persons = len(self.person_ids)
 
-def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict], threshold=0.50,
-                         draw_landmarks=True, blur_unknown=False, device="CPU"):
+        if self.total_samples == 0 or self.num_persons == 0:
+            self.samples_matrix = np.empty((0, 512), dtype=np.float32)
+            self.centroids_matrix = np.empty((0, 512), dtype=np.float32)
+            self.person_sample_slices = {}
+            return
+
+        samples_list = []
+        self.person_sample_slices = {}
+        curr = 0
+        for pid in self.person_ids:
+            p_samples = self.profiles[pid]["samples"]
+            samples_list.extend(p_samples)
+            n_p = len(p_samples)
+            self.person_sample_slices[pid] = (curr, curr + n_p)
+            curr += n_p
+
+        self.samples_matrix = np.ascontiguousarray(np.stack(samples_list), dtype=np.float32)
+        s_norms = np.linalg.norm(self.samples_matrix, axis=1, keepdims=True)
+        s_norms[s_norms == 0] = 1.0
+        self.samples_matrix = self.samples_matrix / s_norms
+
+        centroids_list = [self.profiles[pid]["centroid"] for pid in self.person_ids]
+        self.centroids_matrix = np.ascontiguousarray(np.stack(centroids_list), dtype=np.float32)
+        c_norms = np.linalg.norm(self.centroids_matrix, axis=1, keepdims=True)
+        c_norms[c_norms == 0] = 1.0
+        self.centroids_matrix = self.centroids_matrix / c_norms
+
+    def match(self, query_embedding: np.ndarray, threshold: float = 0.50) -> dict:
+        if self.total_samples == 0 or query_embedding is None:
+            return {
+                "matched": False,
+                "best_name": "Baza je prazna",
+                "similarity": 0.0,
+                "person_id": None,
+                "status": "Nema baze",
+                "quality_icon": "⚪",
+                "quality_badge": "Nema uzoraka",
+                "sample_count": 0,
+                "margin": 0.0,
+                "crop_path": None
+            }
+
+        q = np.ascontiguousarray(query_embedding, dtype=np.float32)
+        q_norm = np.linalg.norm(q)
+        if q_norm > 0:
+            q = q / q_norm
+
+        # 1. BLAS matrix-vector product for all samples simultaneously
+        all_sample_sims = self.samples_matrix @ q
+        # 2. BLAS matrix-vector product for all centroids simultaneously
+        all_centroid_sims = self.centroids_matrix @ q
+
+        candidate_scores = []
+        for i, pid in enumerate(self.person_ids):
+            p = self.profiles[pid]
+            start_i, end_i = self.person_sample_slices[pid]
+            s_sims = all_sample_sims[start_i:end_i]
+            max_sim = float(np.max(s_sims)) if len(s_sims) > 0 else 0.0
+            centroid_sim = float(all_centroid_sims[i])
+
+            if p["count"] > 1:
+                effective_sim = max(max_sim * 0.96, centroid_sim, 0.45 * max_sim + 0.55 * centroid_sim)
+            else:
+                effective_sim = max_sim
+
+            candidate_scores.append({
+                "person_id": pid,
+                "person_name": p["person_name"],
+                "similarity": max(0.0, effective_sim),
+                "max_sample_sim": max(0.0, max_sim),
+                "centroid_sim": max(0.0, centroid_sim),
+                "count": p["count"],
+                "quality_badge": p["quality_badge"],
+                "quality_icon": p["quality_icon"],
+                "crop_path": p["crop_path"]
+            })
+
+        candidate_scores.sort(key=lambda x: x["similarity"], reverse=True)
+        best = candidate_scores[0]
+        second_sim = candidate_scores[1]["similarity"] if len(candidate_scores) > 1 else 0.0
+        margin = best["similarity"] - second_sim
+
+        matched = (best["similarity"] >= threshold)
+        possible_threshold = max(0.30, round(threshold - 0.08, 2))
+        if matched:
+            status = "Prepoznat"
+        elif best["similarity"] >= possible_threshold:
+            status = "Moguće poklapanje"
+        else:
+            status = "Nepoznat"
+
+        return {
+            "matched": matched,
+            "best_name": best["person_name"],
+            "person_id": best["person_id"],
+            "similarity": best["similarity"],
+            "status": status,
+            "quality_icon": best["quality_icon"],
+            "quality_badge": best["quality_badge"],
+            "sample_count": best["count"],
+            "margin": margin,
+            "crop_path": best["crop_path"]
+        }
+
+_face_index = None
+
+def invalidate_face_index():
+    global _face_index
+    _face_index = None
+
+def get_face_index(all_samples=None) -> FaceIndex:
+    global _face_index
+    if _face_index is None:
+        if all_samples is None:
+            import db
+            all_samples = db.get_cached_embeddings()
+        _face_index = FaceIndex(all_samples)
+    return _face_index
+
+# Auto-register callback with db to invalidate cache when DB changes
+try:
+    import db
+    db.register_cache_invalidation_callback(invalidate_face_index)
+except Exception:
+    pass
+
+def match_face(query_embedding: np.ndarray, profiles=None, threshold=0.50):
+    if isinstance(profiles, FaceIndex):
+        return profiles.match(query_embedding, threshold)
+    if profiles is None:
+        return get_face_index().match(query_embedding, threshold)
+    if isinstance(profiles, dict):
+        idx = FaceIndex([])
+        idx.profiles = profiles
+        idx.person_ids = list(profiles.keys())
+        idx.total_samples = sum(len(p.get("samples", [])) for p in profiles.values())
+        idx.num_persons = len(idx.person_ids)
+        if idx.total_samples > 0:
+            samples_list = []
+            idx.person_sample_slices = {}
+            curr = 0
+            for pid in idx.person_ids:
+                p_samples = profiles[pid]["samples"]
+                samples_list.extend(p_samples)
+                n_p = len(p_samples)
+                idx.person_sample_slices[pid] = (curr, curr + n_p)
+                curr += n_p
+            idx.samples_matrix = np.ascontiguousarray(np.stack(samples_list), dtype=np.float32)
+            s_norms = np.linalg.norm(idx.samples_matrix, axis=1, keepdims=True)
+            s_norms[s_norms == 0] = 1.0
+            idx.samples_matrix = idx.samples_matrix / s_norms
+            centroids_list = [profiles[pid]["centroid"] for pid in idx.person_ids]
+            idx.centroids_matrix = np.ascontiguousarray(np.stack(centroids_list), dtype=np.float32)
+            c_norms = np.linalg.norm(idx.centroids_matrix, axis=1, keepdims=True)
+            c_norms[c_norms == 0] = 1.0
+            idx.centroids_matrix = idx.centroids_matrix / c_norms
+            return idx.match(query_embedding, threshold)
+    return get_face_index().match(query_embedding, threshold)
+
+def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, threshold=0.50,
+                         draw_landmarks=True, blur_unknown=False, device="CPU", face_index=None):
     annotated = image_bgr.copy()
     faces_data = extract_faces_from_image(image_bgr, device)
     
-    # Pre-build person profiles (multi-sample centroid models)
-    profiles = build_person_profiles(all_samples)
+    if face_index is None:
+        if all_samples is not None:
+            face_index = FaceIndex(all_samples)
+        else:
+            face_index = get_face_index()
     
     # Sort faces from left to right for clean visual indexing [#1], [#2]
     faces_data.sort(key=lambda f: f["bbox"][0])
@@ -204,7 +322,7 @@ def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict], thresho
         x1, y1, x2, y2 = face["bbox"]
         f_num = face["display_index"]
         
-        match_info = match_face(face["embedding"], profiles, threshold)
+        match_info = face_index.match(face["embedding"], threshold)
         is_known = match_info["matched"]
         status = match_info["status"]
         best_name = match_info["best_name"]
