@@ -151,7 +151,24 @@ class PhotoSorter:
         csv_rows = []
         recent_previews = []
 
-        os.makedirs(self.output_dir, exist_ok=True)
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            test_probe = os.path.join(self.output_dir, f".uniface_perm_probe_{os.getpid()}")
+            with open(test_probe, "w") as f:
+                f.write("ok")
+            os.remove(test_probe)
+        except Exception as e:
+            self.is_running = False
+            return {
+                "status": "error",
+                "message": (
+                    f"Nemate dozvolu za stvaranje ili pisanje u odredišnoj mapi:\n'{self.output_dir}'\n\n"
+                    f"Detalj sustava: {e}\n\n"
+                    f"💡 Savjet: Odaberite drugu odredišnu mapu pomoću gumba 'Promijeni odredište' (npr. na disku C: ili mapu 'H:\\UniFace_Sortirano')."
+                ),
+                "total_files": total_files,
+                "processed": 0
+            }
 
         for i, file_path in enumerate(files):
             if self.cancel_requested:

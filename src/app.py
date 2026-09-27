@@ -1298,8 +1298,97 @@ def handle_export_events_csv():
             ])
     return gr.update(value=export_path, visible=True), f"✅ Uspješno izvezeno {len(events)} prolazaka u CSV!"
 
-# ---------------- EVENT & VJENČANI SORTER HELPERS ----------------
+# ---------------- PAMETNI SORTER FOTOGRAFIJA HELPERS ----------------
 active_sorter_instance: Optional[photo_sorter.PhotoSorter] = None
+
+def select_folder_dialog(title="Odaberite mapu", initial_dir=None) -> str:
+    """Otvara nativni Windows dijalog za grafički odabir mape."""
+    init_d = str(initial_dir or "").strip().strip("'\"")
+    if not os.path.isdir(init_d):
+        init_d = ""
+
+    # 1. Pokušaj preko Tkinter (ugrađen i brz)
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.focus_force()
+        selected = filedialog.askdirectory(title=title, initialdir=init_d or None)
+        root.destroy()
+        if selected:
+            return os.path.normpath(selected)
+    except Exception:
+        pass
+
+    # 2. Fallback preko PowerShell FolderBrowserDialog
+    try:
+        import subprocess
+        init_arg = f"$d.SelectedPath = '{init_d}';" if init_d else ""
+        ps_code = f"""
+        Add-Type -AssemblyName System.Windows.Forms
+        $d = New-Object System.Windows.Forms.FolderBrowserDialog
+        $d.Description = '{title}'
+        $d.ShowNewFolderButton = $true
+        {init_arg}
+        if ($d.ShowDialog((New-Object System.Windows.Forms.NativeWindow)) -eq [System.Windows.Forms.DialogResult]::OK) {{
+            Write-Output $d.SelectedPath
+        }}
+        """
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_code],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        out = proc.stdout.strip()
+        if out and os.path.isdir(out):
+            return os.path.normpath(out)
+    except Exception:
+        pass
+
+    return ""
+
+def is_dir_writable(path: str) -> bool:
+    """Provjerava može li se pisati u zadanu mapu."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        test_file = os.path.join(path, f".uniface_perm_test_{os.getpid()}")
+        with open(test_file, "w") as f:
+            f.write("ok")
+        os.remove(test_file)
+        return True
+    except Exception:
+        return False
+
+def get_smart_default_output_dir(input_folder_path: str) -> str:
+    """
+    Predlaže optimalnu i zajamčeno upisivu mapu za sortirane fotografije.
+    1. Pokušava <roditelj>/<ime>_SORTIRANO (na istom disku).
+    2. Ako roditelj nema dozvolu pisanja (npr. vanjski disk s restriktivnim NTFS ovlastima):
+       pokušava na korijenu istog diska <Drive>:\\UniFace_Sortirano\\<ime>_SORTIRANO (omogućuje Hardlink!).
+    3. Ako ni to nije dostupno, nudi korisničku mapu Slike na C:\\.
+    """
+    clean_in = os.path.abspath(input_folder_path.strip().strip("'\""))
+    base_name = os.path.basename(clean_in) or "Fotografije"
+    parent_dir = os.path.dirname(clean_in)
+
+    candidate_1 = os.path.join(parent_dir, f"{base_name}_SORTIRANO")
+    if is_dir_writable(candidate_1):
+        return candidate_1
+
+    drive, _ = os.path.splitdrive(clean_in)
+    if drive:
+        candidate_2 = os.path.join(drive + os.sep, "UniFace_Sortirano", f"{base_name}_SORTIRANO")
+        if is_dir_writable(candidate_2):
+            return candidate_2
+
+    user_pictures = os.path.join(os.path.expanduser("~"), "Pictures", "UniFace_Sortirano", f"{base_name}_SORTIRANO")
+    if is_dir_writable(user_pictures):
+        return user_pictures
+
+    return os.path.join(APP_DIR, "data", "sortirano", f"{base_name}_SORTIRANO")
 
 def get_sorter_person_choices():
     """Vraća listu imena osoba iz baze za odabir u sorteru."""
@@ -1313,7 +1402,7 @@ def handle_validate_input_folder(input_folder_path: str):
     """Provjerava postojanje ulazne mape i broji podržane fotografije."""
     path = (input_folder_path or "").strip().strip('"\'')
     if not path:
-        return "⚠️ Unesite putanju do mape s fotografijama.", ""
+        return "⚠️ Unesite putanju do mape s fotografijama ili kliknite 'Odaberi mapu...'.", ""
     if not os.path.isdir(path):
         return f"❌ Mapa ne postoji ili nije dostupna: `{path}`", ""
     
@@ -1328,12 +1417,26 @@ def handle_validate_input_folder(input_folder_path: str):
     if count == 0:
         return f"⚠️ U mapi `{path}` nije pronađena niti jedna slika (JPG, PNG, WebP...).", ""
     
-    default_out = os.path.join(os.path.dirname(os.path.abspath(path)), f"{os.path.basename(os.path.abspath(path))}_SORTIRANO")
+    default_out = get_smart_default_output_dir(path)
     return (
         f"✅ **Pronađeno {count} fotografija** spremnih za analizu i sortiranje.\n"
-        f"📁 Ulazna lokacija: `{os.path.abspath(path)}`",
+        f"📁 Ulazna lokacija: `{os.path.abspath(path)}`\n"
+        f"💾 Predloženo odredište: `{default_out}`",
         default_out
     )
+
+def on_browse_input_folder(current_val):
+    chosen = select_folder_dialog("Odaberite mapu s fotografijama", current_val)
+    if not chosen:
+        return gr.update(), gr.update(), gr.update()
+    info_md, def_out = handle_validate_input_folder(chosen)
+    return chosen, info_md, def_out
+
+def on_browse_output_folder(current_val):
+    chosen = select_folder_dialog("Odaberite odredišnu mapu za sortirane fotografije", current_val)
+    if not chosen:
+        return gr.update()
+    return chosen
 
 def handle_start_photo_sorting(
     input_folder: str,
@@ -3035,19 +3138,23 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         gr.Markdown("### 📂 Odabir mapa i ulaznih fotografija")
                         with gr.Row():
                             sorter_input_folder = gr.Textbox(
-                                label="📁 Izvorna mapa s fotografijama (npr. D:\\Fotografije\\Event_2026)",
-                                placeholder="Upišite ili zalijepite punu putanju do mape s fotografijama...",
+                                label="📁 Izvorna mapa s fotografijama",
+                                placeholder="Kliknite 'Odaberi mapu...' ili upišite punu putanju...",
                                 scale=4
                             )
-                            btn_check_input_folder = gr.Button("🔍 Provjeri mapu", scale=1, variant="secondary")
+                            btn_browse_input_folder = gr.Button("📂 Odaberi mapu...", scale=1, variant="primary")
+                            btn_check_input_folder = gr.Button("🔍 Provjeri", scale=1, variant="secondary")
                         
-                        sorter_folder_info_md = gr.Markdown("💡 *Upišite putanju do mape i kliknite 'Provjeri mapu' za provjeru broja slika.*")
+                        sorter_folder_info_md = gr.Markdown("💡 *Kliknite 'Odaberi mapu...' za brzo pronalaženje ili upišite putanju.*")
                         
-                        sorter_output_folder = gr.Textbox(
-                            label="📂 Odredišna mapa za sortirane fotografije",
-                            placeholder="Zadano: <izvorna_mapa>_SORTIRANO",
-                            info="Mape za prepoznate osobe, zajedničke kadrove, grupe i fotografije bez lica kreirat će se unutar ove lokacije."
-                        )
+                        with gr.Row():
+                            sorter_output_folder = gr.Textbox(
+                                label="📂 Odredišna mapa za sortirane fotografije",
+                                placeholder="Zadano: automatski predložena upisiva lokacija",
+                                info="Mape za prepoznate osobe, zajedničke kadrove, grupe i fotografije bez lica kreirat će se unutar ove lokacije.",
+                                scale=4
+                            )
+                            btn_browse_output_folder = gr.Button("📂 Promijeni odredište...", scale=1, variant="secondary")
 
                     with gr.Group():
                         gr.Markdown("### ⚙️ Postavke biometrijskog razvrstavanja")
@@ -3507,6 +3614,18 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     )
 
     # ------------------ EVENT HANDLERS: TAB 6 PHOTO SORTER ------------------
+    btn_browse_input_folder.click(
+        fn=on_browse_input_folder,
+        inputs=[sorter_input_folder],
+        outputs=[sorter_input_folder, sorter_folder_info_md, sorter_output_folder]
+    )
+
+    btn_browse_output_folder.click(
+        fn=on_browse_output_folder,
+        inputs=[sorter_output_folder],
+        outputs=[sorter_output_folder]
+    )
+
     btn_check_input_folder.click(
         fn=handle_validate_input_folder,
         inputs=[sorter_input_folder],
