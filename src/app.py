@@ -1639,30 +1639,45 @@ input[type="range"] {
 
 /* Person Mini-Avatar Thumbnail */
 .cyber-person-avatar-thumb {
-    width: 66px !important;
-    height: 66px !important;
-    min-width: 66px !important;
-    min-height: 66px !important;
-    max-width: 66px !important;
-    max-height: 66px !important;
-    border-radius: 12px !important;
+    width: 96px !important;
+    height: 96px !important;
+    min-width: 96px !important;
+    min-height: 96px !important;
+    max-width: 96px !important;
+    max-height: 96px !important;
+    border-radius: 14px !important;
     border: 2px solid #06b6d4 !important;
-    box-shadow: 0 0 12px rgba(6, 182, 212, 0.4) !important;
+    box-shadow: 0 0 16px rgba(6, 182, 212, 0.45) !important;
     background: #0f172a !important;
     overflow: hidden !important;
-    margin-top: 6px !important;
+    position: relative !important;
+    margin-top: 4px !important;
 }
 
 .cyber-person-avatar-thumb img {
     object-fit: cover !important;
-    border-radius: 10px !important;
+    border-radius: 12px !important;
     width: 100% !important;
     height: 100% !important;
 }
 
+/* Hide all Gradio overlay action buttons from avatar */
+.cyber-person-avatar-thumb button,
+.cyber-person-avatar-thumb .icon-button,
+.cyber-person-avatar-thumb [aria-label],
+.cyber-person-avatar-thumb .toolbar,
+.cyber-person-avatar-thumb .download-btn,
+.cyber-person-avatar-thumb .fullscreen-btn,
+.cyber-person-avatar-thumb .image-button {
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
 .person-card-top-row {
     align-items: center !important;
-    gap: 12px !important;
+    gap: 14px !important;
 }
 """
 
@@ -1891,8 +1906,9 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                     label="Avatar",
                                     show_label=False,
                                     container=False,
-                                    height=66,
-                                    width=66,
+                                    height=96,
+                                    width=96,
+                                    buttons=[],
                                     interactive=False,
                                     elem_classes=["cyber-person-avatar-thumb"]
                                 )
