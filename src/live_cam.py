@@ -74,7 +74,7 @@ def draw_corner_box(img, pt1, pt2, color, thickness=2, corner_len=20):
     cv2.line(img, (x2, y2), (x2 - corner_len, y2), color, thickness)
     cv2.line(img, (x2, y2), (x2, y2 - corner_len), color, thickness)
 
-def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, status_msg="", camera_label="USB Web Kamera", cur_sec=0, total_sec=0, log_events=False, record_nvr=False):
+def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, status_msg="", camera_label="USB Web Kamera", cur_sec=0, total_sec=0, log_events=False, record_nvr=False, only_matched=False):
     """Renders sleek top and bottom HUD panels with live telemetry and timeline."""
     h, w = frame.shape[:2]
     
@@ -139,10 +139,11 @@ def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, stat
     if status_msg:
         cv2.putText(frame, status_msg, (15, h - 12), cv2.FONT_HERSHEY_DUPLEX, 0.55, (34, 197, 94), 1, cv2.LINE_AA)
     else:
+        filter_str = "Samo Zelena" if only_matched else "Sva Lica"
         if total_sec > 0:
-            controls_txt = "[Q] Izlaz   [SPACE] Pauza   [R] NVR Snimanje   [A/D] Premotaj   [E] Evidencija   [S] Kadar"
+            controls_txt = f"[Q] Izlaz   [SPACE] Pauza   [M] {filter_str}   [R] NVR   [A/D] Premotaj   [E] Dnevnik   [S] Kadar"
         else:
-            controls_txt = "[Q/ESC] Izlaz   [R] NVR Snimanje   [E] Evidencija ON/OFF   [S] Spremi kadar   [O] Mapa   [SPACE] Pauza"
+            controls_txt = f"[Q/ESC] Izlaz   [M] Prikaz: {filter_str}   [R] NVR   [E] Evidencija   [S] Kadar   [SPACE] Pauza"
         cv2.putText(frame, controls_txt, (15, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (148, 163, 184), 1, cv2.LINE_AA)
 
 def resolve_stream_source(source_input):
@@ -226,12 +227,12 @@ def resolve_stream_source(source_input):
         cam_idx = 0
     return cam_idx, f"USB Web Kamera (indeks {cam_idx})", "usb"
 
-def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="CPU", start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_duration_sec=300, max_storage_gb=20.0):
+def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="CPU", start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_duration_sec=300, max_storage_gb=20.0, only_matched=False):
     """
     Main loop for live face recognition from webcam, IP/RTSP camera, YouTube, or video file.
     """
     source_str = str(camera_source).strip()
-    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}, record_nvr={record_nvr}")
+    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}, record_nvr={record_nvr}, only_matched={only_matched}")
     print("===================================================")
     print("      UniFace Live Camera - Prepoznavanje Lica")
     if log_events:
@@ -558,6 +559,8 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
             # Render tracked faces onto frame
             display_frame = frame.copy()
             for face in current_faces_tracked:
+                if only_matched and face.get("status") != "match":
+                    continue
                 x1, y1, x2, y2 = map(int, face["bbox"])
                 color = face["color"]
                 label = face["label"]
@@ -607,7 +610,8 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                 cur_sec=cur_sec,
                 total_sec=total_seconds,
                 log_events=log_events,
-                record_nvr=record_nvr
+                record_nvr=record_nvr,
+                only_matched=only_matched
             )
 
             # Write frame to NVR if active
@@ -680,6 +684,11 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                     status_notification = "⏸️ Evidencija prolazaka ISKLJUČENA"
                     print("[INFO] ⏸️ Evidencija prolazaka ISKLJUČENA")
                 status_notification_time = time.time()
+            elif key in (ord('m'), ord('M')): # M -> Toggle only matched (green) vs all faces
+                only_matched = not only_matched
+                status_notification = "Filter: SAMO PREPOZNATA LICA (Zelena)" if only_matched else "Filter: SVA LICA (Ukljucujuci nepoznata)"
+                status_notification_time = time.time()
+                print(f"[INFO] {status_notification}")
             elif key in (ord('a'), ord('A'), ord('j'), ord('J')): # Seek -10s
                 if source_kind in ("youtube", "file"):
                     seek_target_sec = max(0, cur_sec - 10)
@@ -746,6 +755,7 @@ if __name__ == "__main__":
     parser.add_argument("--record-nvr", action="store_true", default=False, help="Enable continuous NVR MP4 segment recording")
     parser.add_argument("--segment-min", type=int, default=5, help="Duration of each MP4 video segment in minutes (default: 5)")
     parser.add_argument("--max-gb", type=float, default=20.0, help="Maximum disk storage quota in GB for FIFO cleanup (default: 20)")
+    parser.add_argument("--only-matched", action="store_true", default=False, help="Display bounding boxes only for recognized faces (green)")
     args = parser.parse_args()
     
     src = args.camera if args.camera is not None else args.source
@@ -760,5 +770,6 @@ if __name__ == "__main__":
         cooldown_sec=args.cooldown,
         record_nvr=args.record_nvr,
         segment_duration_sec=args.segment_min * 60,
-        max_storage_gb=args.max_gb
+        max_storage_gb=args.max_gb,
+        only_matched=args.only_matched
     )

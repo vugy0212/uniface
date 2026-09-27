@@ -100,7 +100,7 @@ def refresh_database_view(search_query=""):
     return rows, stats_text
 
 # ---------------- REAL-TIME DETECTION CARDS GENERATOR ----------------
-def generate_detection_cards_html(results):
+def generate_detection_cards_html(results, show_all_faces=False):
     if not results:
         return """
         <div class="detection-panel-inner">
@@ -120,8 +120,40 @@ def generate_detection_cards_html(results):
         </div>
         """
     import base64
+    
+    num_total = len(results)
+    num_recognized = sum(1 for r in results if r.get("status") == "Prepoznat")
+    
+    if not show_all_faces:
+        display_results = [r for r in results if r.get("status") == "Prepoznat"]
+    else:
+        display_results = results
+
+    if not display_results:
+        badge_text = f"0 / {num_total} lica"
+        return f"""
+        <div class="detection-panel-inner">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <span class="pulse-icon active"></span> Real-time Detekcija
+                </div>
+                <span class="panel-badge active" style="color: #94a3b8; border-color: rgba(148, 163, 184, 0.4);">{badge_text}</span>
+            </div>
+            <div class="detection-empty-state">
+                <div class="radar-scan-box">
+                    <div class="radar-beam"></div>
+                </div>
+                <div class="empty-title" style="color: #f59e0b;">Nema prepoznatih lica</div>
+                <div class="empty-sub">
+                    Pronađeno je <b>{num_total}</b> lica u kadru, ali nijedno ne prelazi zadani prag.<br><br>
+                    Uključite kvačicu <i>"Prikaži i nepoznata lica"</i> iznad za prikaz svih lica s postotkom sličnosti ili snizite prag.
+                </div>
+            </div>
+        </div>
+        """
+
     cards = []
-    for r in results:
+    for r in display_results:
         success, buffer = cv2.imencode('.jpg', r["crop_bgr"])
         if success:
             img_b64 = base64.b64encode(buffer).decode('utf-8')
@@ -131,7 +163,7 @@ def generate_detection_cards_html(results):
         
         sim_val = r.get("similarity", 0)
         if isinstance(sim_val, (int, float)):
-            sim_str = f"{float(sim_val)*100:.0f}% Match"
+            sim_str = f"{float(sim_val)*100:.1f}% Match"
         else:
             sim_str = f"{sim_val} Match"
             
@@ -171,13 +203,18 @@ def generate_detection_cards_html(results):
         """)
         
     cards_html = "".join(cards)
+    if not show_all_faces:
+        badge_text = f"{num_recognized} prepoznato" if num_recognized == num_total else f"{num_recognized} / {num_total} lica"
+    else:
+        badge_text = f"{num_total} lica"
+        
     return f"""
     <div class="detection-panel-inner">
         <div class="panel-header">
             <div class="panel-title">
                 <span class="pulse-icon active"></span> Real-time Detekcija
             </div>
-            <span class="panel-badge active">{len(results)} lica</span>
+            <span class="panel-badge active">{badge_text}</span>
         </div>
         <div class="cyber-cards-scroll">
             {cards_html}
@@ -186,13 +223,13 @@ def generate_detection_cards_html(results):
     """
 
 # ---------------- PREPOZNAVANJE ----------------
-def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
+def recognize_faces(image, threshold, draw_landmarks, blur_unknown, show_all_faces=False):
     if image is None:
-        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), [], generate_detection_cards_html([])
+        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
     
     img_bgr, err = imread_unicode(image)
     if img_bgr is None:
-        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), [], generate_detection_cards_html([])
+        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
         
     annotated_bgr, results = face_engine.process_and_annotate(
         img_bgr,
@@ -237,7 +274,7 @@ def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
     
     summary = f"🔍 Pronađeno lica: **{len(results)}** | ✅ Prepoznato: **{num_recognized}** | ⚠️ Moguće (ispod praga): **{num_possible}** | ❌ Nepoznato: **{num_unknown}**"
     dropdown_update = gr.update(choices=candidate_choices, value=candidate_choices[0] if candidate_choices else None)
-    cards_html = generate_detection_cards_html(results)
+    cards_html = generate_detection_cards_html(results, show_all_faces=show_all_faces)
     return annotated_rgb, crops_gallery, table_data, summary, dropdown_update, results, cards_html
 
 def on_recognition_gallery_click(evt: gr.SelectData, rec_faces):
@@ -1103,17 +1140,17 @@ def on_reset_snapshot_dir_click():
     g, t, info, dd, prev, desc = get_snapshots_ui_data()
     return f"Vraćeno na zadanu mapu: `{config.DEFAULT_SNAPSHOT_DIR}`", config.DEFAULT_SNAPSHOT_DIR, info, g, t, dd, prev, desc
 
-def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur):
+def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur, show_all_faces=False):
     if not filename:
-        return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], generate_detection_cards_html([]), "⚠️ Nema odabrane snimke."
+        return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], generate_detection_cards_html([], show_all_faces=show_all_faces), "⚠️ Nema odabrane snimke."
     snap_dir = config.get_snapshot_dir()
     path = os.path.join(snap_dir, filename)
     if not os.path.isfile(path):
-        return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], generate_detection_cards_html([]), "⚠️ Datoteka nije pronađena."
+        return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], generate_detection_cards_html([], show_all_faces=show_all_faces), "⚠️ Datoteka nije pronađena."
     
     pil_img = Image.open(path).convert("RGB")
     annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html = recognize_faces(
-        pil_img, threshold, landmarks, blur
+        pil_img, threshold, landmarks, blur, show_all_faces=show_all_faces
     )
     msg = f"✅ Kadar `{filename}` je prebačen u Tab 1 i analiziran!"
     return pil_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html, msg
@@ -2866,8 +2903,13 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
                 # 3. Desni stupac: Real-time Detection panel (cca 25% širine)
                 with gr.Column(scale=3, min_width=270, elem_classes=["cyber-card"]):
+                    cards_show_all_chk = gr.Checkbox(
+                        value=False,
+                        label="Prikaži i nepoznata lica (% sličnosti)",
+                        info="Zadano: prikaz samo prepoznatih (zelena)"
+                    )
                     detection_cards_html = gr.HTML(
-                        value=generate_detection_cards_html([]),
+                        value=generate_detection_cards_html([], show_all_faces=False),
                         elem_classes=["detection-panel-container"]
                     )
                     
@@ -3479,33 +3521,44 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[batch_status_md, manage_person_dropdown, existing_person_picker, db_table, db_stats_md]
     )
     
-    def on_analysis_param_change(image, threshold, draw_landmarks, blur_unknown):
+    def on_analysis_param_change(image, threshold, draw_landmarks, blur_unknown, show_all_faces):
         if image is None:
             return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
-        return recognize_faces(image, threshold, draw_landmarks, blur_unknown)
+        return recognize_faces(image, threshold, draw_landmarks, blur_unknown, show_all_faces=show_all_faces)
+
+    def on_cards_filter_toggle(rec_faces, show_all):
+        if not rec_faces:
+            return generate_detection_cards_html([], show_all_faces=show_all)
+        return generate_detection_cards_html(rec_faces, show_all_faces=show_all)
 
     btn_recognize.click(
         fn=recognize_faces,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
     )
 
     landmarks_chk.change(
         fn=on_analysis_param_change,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
     )
 
     blur_chk.change(
         fn=on_analysis_param_change,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
     )
 
     threshold_slider.release(
         fn=on_analysis_param_change,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    cards_show_all_chk.change(
+        fn=on_cards_filter_toggle,
+        inputs=[rec_faces_state, cards_show_all_chk],
+        outputs=[detection_cards_html]
     )
 
     def on_live_mode_change(m):
@@ -3672,7 +3725,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
     btn_send_to_rec.click(
         fn=on_send_snapshot_to_recognition,
-        inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_chk],
+        inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
         outputs=[input_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html, snap_action_status]
     )
 
