@@ -935,6 +935,79 @@ def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", y
     except Exception as e:
         return f"❌ Greška pri pokretanju: {e}"
 
+def handle_launch_multicam(
+    c1_on, c1_name, c1_src,
+    c2_on, c2_name, c2_src,
+    c3_on, c3_name, c3_src,
+    c4_on, c4_name, c4_src,
+    threshold=0.45,
+    log_events=False,
+    cooldown_sec=30
+):
+    try:
+        import subprocess
+        creationflags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        
+        candidates = [
+            os.path.join(APP_DIR, ".venv", "Scripts", "python.exe"),
+            os.path.join(os.path.dirname(APP_DIR), ".venv", "Scripts", "python.exe"),
+            os.path.join(sys.prefix, "Scripts", "python.exe"),
+            sys.executable
+        ]
+        py_exe = sys.executable
+        for cand in candidates:
+            if os.path.isfile(cand):
+                py_exe = cand
+                break
+                
+        env = os.environ.copy()
+        venv_scripts = os.path.dirname(py_exe)
+        env["PATH"] = venv_scripts + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = os.path.dirname(venv_scripts)
+
+        script_path = os.path.join(APP_DIR, "run_multicam.py")
+        if not os.path.isfile(script_path):
+            script_path = os.path.join(os.path.dirname(APP_DIR), "run_multicam.py")
+
+        cmd = [py_exe, script_path, "--threshold", str(float(threshold))]
+        
+        if c1_on and str(c1_src).strip():
+            cmd.extend(["--cam1", str(c1_src).strip(), "--name1", str(c1_name).strip() or "Kamera 1"])
+        else:
+            cmd.append("--off1")
+            
+        if c2_on and str(c2_src).strip():
+            cmd.extend(["--cam2", str(c2_src).strip(), "--name2", str(c2_name).strip() or "Kamera 2"])
+        else:
+            cmd.append("--off2")
+
+        if c3_on and str(c3_src).strip():
+            cmd.extend(["--cam3", str(c3_src).strip(), "--name3", str(c3_name).strip() or "Kamera 3"])
+        else:
+            cmd.append("--off3")
+
+        if c4_on and str(c4_src).strip():
+            cmd.extend(["--cam4", str(c4_src).strip(), "--name4", str(c4_name).strip() or "Kamera 4"])
+        else:
+            cmd.append("--off4")
+
+        if log_events:
+            cmd.extend(["--log-events", "--cooldown", str(int(cooldown_sec))])
+
+        active_count = sum([
+            bool(c1_on and str(c1_src).strip()),
+            bool(c2_on and str(c2_src).strip()),
+            bool(c3_on and str(c3_src).strip()),
+            bool(c4_on and str(c4_src).strip())
+        ])
+        if active_count == 0:
+            return "⚠️ Morate omogućiti barem jednu kameru za 2×2 mrežu."
+
+        subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
+        return f"🎛️ **Multi-Camera 2×2 mreža ({active_count} kamere) je uspješno pokrenuta u novom prozoru!**\n*(Pritisnite tipke `1`-`4` za Solo prikaz pojedine kamere, `0` ili `ESC` za povratak u 2×2 grid, `S` za snimanje kadra, `E` za evidenciju, `Q` za izlaz)*"
+    except Exception as e:
+        return f"❌ Greška pri pokretanju 2×2 mreže: {e}"
+
 # ---------------- SNAPSHOTS & ARCHIVE HELPERS ----------------
 def get_snapshots_ui_data():
     snaps = config.get_saved_snapshots()
@@ -1789,49 +1862,78 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             landmarks_chk = gr.Checkbox(value=False, label="Prikaži točke lica (Landmarks)")
                             blur_chk = gr.Checkbox(value=False, label="Zamućenje nepoznatih lica")
                             
-                    with gr.Accordion("📹 Odabir izvora za Live Prikaz (USB / IP Nadzor / YouTube / Video)", open=False, elem_classes=["cyber-accordion"]):
-                        cam_source_type = gr.Radio(
-                            choices=[
-                                "USB Web Kamera", 
-                                "IP / RTSP Kamera za nadzor", 
-                                "YouTube / Web Video", 
-                                "Lokalna Video Datoteka"
-                            ],
-                            value="USB Web Kamera",
-                            label="Vrsta video izvora"
+                    with gr.Accordion("📹 Live Nadzor i Kamere (Pojedinačna ili 2×2 Mreža)", open=False, elem_classes=["cyber-accordion"]):
+                        live_mode_radio = gr.Radio(
+                            choices=["Pojedinačna kamera (Single View)", "Mreža više kamera (2×2 Grid)"],
+                            value="Pojedinačna kamera (Single View)",
+                            label="Način rada nadzora"
                         )
-                        cam_usb_idx = gr.Dropdown(
-                            choices=["0", "1", "2", "3"],
-                            value="0",
-                            label="Indeks lokalne USB kamere",
-                            info="0 je ugrađena ili prva spojena kamera, 1 je druga..."
-                        )
-                        cam_rtsp_url = gr.Textbox(
-                            label="RTSP ili HTTP adresa IP kamere za nadzor",
-                            placeholder="npr. rtsp://admin:lozinka@192.168.1.100:554/stream1 ili http://192.168.1.15:8080/video",
-                            info="Podržava RTSP streamove sigurnosnih kamera ili HTTP MJPEG stream s mobitela",
-                            visible=False
-                        )
-                        cam_youtube_url = gr.Textbox(
-                            label="YouTube / Vimeo video link",
-                            placeholder="npr. https://www.youtube.com/watch?v=... ili https://youtu.be/...",
-                            info="Automatski dohvaća i reproducira video stream u stvarnom vremenu s prepoznavanjem lica",
-                            visible=False
-                        )
-                        cam_video_file = gr.File(
-                            label="Učitaj video datoteku s računala (.mp4, .mkv, .avi, .mov)",
-                            file_types=[".mp4", ".mkv", ".avi", ".mov"],
-                            visible=False
-                        )
-                        cam_start_sec = gr.Slider(
-                            minimum=0,
-                            maximum=7200,
-                            value=0,
-                            step=5,
-                            label="⏩ Početak reprodukcije videa (u sekundama)",
-                            info="Omogućuje pokretanje YouTube ili lokalnog videa od željene minute/sekunde",
-                            visible=False
-                        )
+                        
+                        # 1. Pojedinačna kamera panel
+                        with gr.Column(visible=True) as single_cam_box:
+                            cam_source_type = gr.Radio(
+                                choices=[
+                                    "USB Web Kamera", 
+                                    "IP / RTSP Kamera za nadzor", 
+                                    "YouTube / Web Video", 
+                                    "Lokalna Video Datoteka"
+                                ],
+                                value="USB Web Kamera",
+                                label="Vrsta video izvora"
+                            )
+                            cam_usb_idx = gr.Dropdown(
+                                choices=["0", "1", "2", "3"],
+                                value="0",
+                                label="Indeks lokalne USB kamere",
+                                info="0 je ugrađena ili prva spojena kamera, 1 je druga..."
+                            )
+                            cam_rtsp_url = gr.Textbox(
+                                label="RTSP ili HTTP adresa IP kamere za nadzor",
+                                value="rtsp://admin:admin@192.168.50.236:554/11",
+                                placeholder="npr. rtsp://admin:admin@192.168.50.236:554/11",
+                                info="Podržava RTSP streamove sigurnosnih kamera ili HTTP MJPEG stream s mobitela",
+                                visible=False
+                            )
+                            cam_youtube_url = gr.Textbox(
+                                label="YouTube / Vimeo video link",
+                                placeholder="npr. https://www.youtube.com/watch?v=... ili https://youtu.be/...",
+                                info="Automatski dohvaća i reproducira video stream u stvarnom vremenu s prepoznavanjem lica",
+                                visible=False
+                            )
+                            cam_video_file = gr.File(
+                                label="Učitaj video datoteku s računala (.mp4, .mkv, .avi, .mov)",
+                                file_types=[".mp4", ".mkv", ".avi", ".mov"],
+                                visible=False
+                            )
+                            cam_start_sec = gr.Slider(
+                                minimum=0,
+                                maximum=7200,
+                                value=0,
+                                step=5,
+                                label="⏩ Početak reprodukcije videa (u sekundama)",
+                                info="Omogućuje pokretanje YouTube ili lokalnog videa od željene minute/sekunde",
+                                visible=False
+                            )
+
+                        # 2. 2x2 Nadzorna mreža panel
+                        with gr.Column(visible=False) as multi_cam_box:
+                            gr.Markdown("#### 🎛️ Konfiguracija kamera za 2×2 Nadzornu Mrežu")
+                            with gr.Row():
+                                mc_c1_on = gr.Checkbox(value=True, label="Kamera 1 aktivna", scale=1)
+                                mc_c1_name = gr.Textbox(value="USB Web Kamera", label="Naziv Kamere 1", scale=2)
+                                mc_c1_src = gr.Textbox(value="0", label="Izvor (USB indeks ili RTSP)", scale=3)
+                            with gr.Row():
+                                mc_c2_on = gr.Checkbox(value=True, label="Kamera 2 aktivna", scale=1)
+                                mc_c2_name = gr.Textbox(value="Denver IP Nadzor", label="Naziv Kamere 2", scale=2)
+                                mc_c2_src = gr.Textbox(value="rtsp://admin:admin@192.168.50.236:554/11", label="Izvor (RTSP link)", scale=3)
+                            with gr.Row():
+                                mc_c3_on = gr.Checkbox(value=False, label="Kamera 3 aktivna", scale=1)
+                                mc_c3_name = gr.Textbox(value="Kamera 3", label="Naziv Kamere 3", scale=2)
+                                mc_c3_src = gr.Textbox(value="", placeholder="Opcionalno: RTSP ili USB indeks", label="Izvor", scale=3)
+                            with gr.Row():
+                                mc_c4_on = gr.Checkbox(value=False, label="Kamera 4 aktivna", scale=1)
+                                mc_c4_name = gr.Textbox(value="Kamera 4", label="Naziv Kamere 4", scale=2)
+                                mc_c4_src = gr.Textbox(value="", placeholder="Opcionalno: RTSP ili USB indeks", label="Izvor", scale=3)
 
                     with gr.Row():
                         cam_enable_log = gr.Checkbox(
@@ -1854,6 +1956,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                     with gr.Row():
                         btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
                         btn_launch_live = gr.Button("🎥 Pokreni Live Kameru", variant="secondary", scale=2, elem_classes=["btn-cyber-live"])
+                        btn_launch_grid = gr.Button("🎛️ Pokreni 2×2 Mrežu", variant="secondary", scale=2, visible=False, elem_classes=["btn-cyber-live"])
                         btn_open_snaps_quick = gr.Button("📂 Snimke (S)", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
                     
                 # 2. Srednji stupac: Vizualni rezultat (cca 42% širine)
@@ -2330,6 +2433,21 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
     )
 
+    def on_live_mode_change(m):
+        is_grid = (m == "Mreža više kamera (2×2 Grid)")
+        return (
+            gr.update(visible=not is_grid),
+            gr.update(visible=is_grid),
+            gr.update(visible=not is_grid),
+            gr.update(visible=is_grid)
+        )
+
+    live_mode_radio.change(
+        fn=on_live_mode_change,
+        inputs=[live_mode_radio],
+        outputs=[single_cam_box, multi_cam_box, btn_launch_live, btn_launch_grid]
+    )
+
     def on_cam_source_change(st):
         is_video = st in ("YouTube / Web Video", "Lokalna Video Datoteka")
         return (
@@ -2355,6 +2473,20 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     btn_launch_live.click(
         fn=handle_launch_live,
         inputs=[cam_source_type, cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec, cam_enable_log, cam_cooldown_sec],
+        outputs=[rec_status_md]
+    )
+
+    btn_launch_grid.click(
+        fn=handle_launch_multicam,
+        inputs=[
+            mc_c1_on, mc_c1_name, mc_c1_src,
+            mc_c2_on, mc_c2_name, mc_c2_src,
+            mc_c3_on, mc_c3_name, mc_c3_src,
+            mc_c4_on, mc_c4_name, mc_c4_src,
+            threshold_slider,
+            cam_enable_log,
+            cam_cooldown_sec
+        ],
         outputs=[rec_status_md]
     )
     
