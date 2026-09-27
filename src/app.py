@@ -1697,8 +1697,13 @@ CUSTOM_CSS = """
     --input-border-color: rgba(56, 189, 248, 0.25) !important;
     --input-placeholder-color: #64748b !important;
     --checkbox-background-color: #090d16 !important;
+    --checkbox-background-color-selected: #0284c7 !important;
+    --checkbox-border-color: rgba(56, 189, 248, 0.45) !important;
+    --checkbox-border-color-selected: #38bdf8 !important;
     --checkbox-label-background-fill: #0d1424 !important;
+    --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.15) !important;
     --checkbox-label-text-color: #f8fafc !important;
+    --checkbox-label-text-color-selected: #38bdf8 !important;
     --panel-background-fill: #0d1424 !important;
     --table-even-background-fill: #0d1424 !important;
     --table-odd-background-fill: #090d16 !important;
@@ -1940,20 +1945,136 @@ fieldset.block,
 div.block,
 .gradio-checkbox,
 label:has(input[type="checkbox"]),
+label:has(input[type="radio"]),
 label.checkbox-label {
     background: rgba(13, 20, 36, 0.9) !important;
     background-color: rgba(13, 20, 36, 0.9) !important;
     border: 1px solid rgba(56, 189, 248, 0.22) !important;
     border-radius: 10px !important;
     color: #f8fafc !important;
+    transition: all 0.2s ease !important;
+}
+
+label:has(input[type="checkbox"]:checked),
+label:has(input[type="radio"]:checked) {
+    background: rgba(14, 165, 233, 0.12) !important;
+    border-color: rgba(56, 189, 248, 0.55) !important;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.15) !important;
 }
 
 label.block span,
 label:has(input[type="checkbox"]) span,
+label:has(input[type="radio"]) span,
 .gradio-checkbox span,
+.gradio-radio span,
 .block span {
     color: #f8fafc !important;
     font-weight: 500 !important;
+}
+
+label:has(input[type="checkbox"]:checked) span,
+label:has(input[type="radio"]:checked) span {
+    color: #38bdf8 !important;
+    font-weight: 600 !important;
+}
+
+label:has(input[type="checkbox"]),
+label:has(input[type="radio"]),
+label.checkbox-label,
+.gradio-checkbox label,
+.gradio-radio label {
+    cursor: pointer !important;
+    user-select: none !important;
+}
+
+/* Explicit Cyber Checkbox Styling */
+input[type="checkbox"] {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
+    width: 20px !important;
+    height: 20px !important;
+    min-width: 20px !important;
+    min-height: 20px !important;
+    max-width: 20px !important;
+    max-height: 20px !important;
+    margin: 0 10px 0 0 !important;
+    cursor: pointer !important;
+    background-color: #090d16 !important;
+    border: 2px solid rgba(56, 189, 248, 0.5) !important;
+    border-radius: 5px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    vertical-align: middle !important;
+    position: relative !important;
+    outline: none !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+    flex-shrink: 0 !important;
+}
+
+input[type="checkbox"]:hover {
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4), inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+}
+
+input[type="checkbox"]:checked {
+    background-color: #0284c7 !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'%3E%3C/polyline%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: center !important;
+    background-size: 14px 14px !important;
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.7), inset 0 1px 2px rgba(255, 255, 255, 0.2) !important;
+}
+
+/* Explicit Cyber Radio Styling */
+input[type="radio"] {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
+    width: 20px !important;
+    height: 20px !important;
+    min-width: 20px !important;
+    min-height: 20px !important;
+    max-width: 20px !important;
+    max-height: 20px !important;
+    margin: 0 10px 0 0 !important;
+    cursor: pointer !important;
+    background-color: #090d16 !important;
+    border: 2px solid rgba(56, 189, 248, 0.5) !important;
+    border-radius: 50% !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    vertical-align: middle !important;
+    position: relative !important;
+    outline: none !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+    flex-shrink: 0 !important;
+}
+
+input[type="radio"]:hover {
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4) !important;
+}
+
+input[type="radio"]:checked {
+    background-color: #090d16 !important;
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.7) !important;
+}
+
+input[type="radio"]:checked::after {
+    content: '' !important;
+    display: block !important;
+    width: 10px !important;
+    height: 10px !important;
+    border-radius: 50% !important;
+    background: linear-gradient(135deg, #0284c7 0%, #38bdf8 100%) !important;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.9) !important;
 }
 
 label.block p,
@@ -1997,7 +2118,7 @@ label > span.label-text,
 }
 
 /* Inputs, Textareas, Textboxes, and Markdown blocks */
-input,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 textarea,
 select,
 .gr-input,
@@ -2517,13 +2638,17 @@ custom_theme = gr.themes.Soft(
     input_placeholder_color="#64748b",
     input_placeholder_color_dark="#64748b",
     checkbox_background_color="#090d16",
+    checkbox_background_color_selected="#0284c7",
     checkbox_background_color_dark="#090d16",
+    checkbox_background_color_selected_dark="#0284c7",
+    checkbox_border_color="rgba(56, 189, 248, 0.45)",
+    checkbox_border_color_selected="#38bdf8",
+    checkbox_border_color_dark="rgba(56, 189, 248, 0.45)",
+    checkbox_border_color_selected_dark="#38bdf8",
     checkbox_label_background_fill="#0d1424",
     checkbox_label_background_fill_dark="#0d1424",
     checkbox_label_text_color="#f8fafc",
     checkbox_label_text_color_dark="#f8fafc",
-    checkbox_border_color="rgba(56, 189, 248, 0.3)",
-    checkbox_border_color_dark="rgba(56, 189, 248, 0.3)",
     accordion_text_color="#f8fafc",
     accordion_text_color_dark="#f8fafc",
     table_even_background_fill="#0d1424",
@@ -3354,8 +3479,31 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[batch_status_md, manage_person_dropdown, existing_person_picker, db_table, db_stats_md]
     )
     
+    def on_analysis_param_change(image, threshold, draw_landmarks, blur_unknown):
+        if image is None:
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        return recognize_faces(image, threshold, draw_landmarks, blur_unknown)
+
     btn_recognize.click(
         fn=recognize_faces,
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    landmarks_chk.change(
+        fn=on_analysis_param_change,
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    blur_chk.change(
+        fn=on_analysis_param_change,
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    threshold_slider.release(
+        fn=on_analysis_param_change,
         inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
     )
