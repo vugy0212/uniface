@@ -8,10 +8,10 @@ for p in [CURRENT_DIR, os.path.join(CURRENT_DIR, "src"), PARENT_DIR, os.path.joi
     if os.path.exists(p) and p not in sys.path:
         sys.path.insert(0, p)
 
-from src.app import demo, custom_theme
+from src.app import demo, custom_theme, CUSTOM_CSS
 
 if __name__ == "__main__":
     print("===================================================")
     print("      Starting UniFace Studio (Local Web UI)")
     print("===================================================")
-    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, theme=custom_theme)
+    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, theme=custom_theme, css=CUSTOM_CSS)

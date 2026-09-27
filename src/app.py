@@ -2439,4 +2439,4 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica", theme=custom_them
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, theme=custom_theme)
+    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, theme=custom_theme, css=CUSTOM_CSS)
