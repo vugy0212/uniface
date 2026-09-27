@@ -878,14 +878,16 @@ def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", y
         return "⚠️ Skripta `live_cam.py` nije pronađena."
     try:
         import subprocess
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = subprocess.CREATE_NEW_CONSOLE
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             
         candidates = [
+            os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe"),
+            os.path.join(os.path.dirname(APP_DIR), ".venv", "Scripts", "pythonw.exe"),
+            os.path.join(APP_DIR, "python", "pythonw.exe"),
+            os.path.join(sys.prefix, "Scripts", "pythonw.exe"),
             os.path.join(APP_DIR, ".venv", "Scripts", "python.exe"),
             os.path.join(os.path.dirname(APP_DIR), ".venv", "Scripts", "python.exe"),
-            os.path.join(sys.prefix, "Scripts", "python.exe"),
+            os.path.join(APP_DIR, "python", "python.exe"),
             sys.executable
         ]
         py_exe = sys.executable
@@ -952,12 +954,16 @@ def handle_launch_multicam(
 ):
     try:
         import subprocess
-        creationflags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         
         candidates = [
+            os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe"),
+            os.path.join(os.path.dirname(APP_DIR), ".venv", "Scripts", "pythonw.exe"),
+            os.path.join(APP_DIR, "python", "pythonw.exe"),
+            os.path.join(sys.prefix, "Scripts", "pythonw.exe"),
             os.path.join(APP_DIR, ".venv", "Scripts", "python.exe"),
             os.path.join(os.path.dirname(APP_DIR), ".venv", "Scripts", "python.exe"),
-            os.path.join(sys.prefix, "Scripts", "python.exe"),
+            os.path.join(APP_DIR, "python", "python.exe"),
             sys.executable
         ]
         py_exe = sys.executable
