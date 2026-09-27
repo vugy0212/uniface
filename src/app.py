@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import gradio as gr
 from PIL import Image
+from typing import Optional, List, Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -14,6 +15,10 @@ import face_engine
 import hardware
 import backup
 import config
+import photo_sorter
+import queue
+import threading
+import shutil
 from image_utils import imread_unicode, imwrite_unicode, save_image_dedup
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -95,7 +100,7 @@ def refresh_database_view(search_query=""):
     return rows, stats_text
 
 # ---------------- REAL-TIME DETECTION CARDS GENERATOR ----------------
-def generate_detection_cards_html(results):
+def generate_detection_cards_html(results, show_all_faces=False):
     if not results:
         return """
         <div class="detection-panel-inner">
@@ -115,8 +120,40 @@ def generate_detection_cards_html(results):
         </div>
         """
     import base64
+    
+    num_total = len(results)
+    num_recognized = sum(1 for r in results if r.get("status") == "Prepoznat")
+    
+    if not show_all_faces:
+        display_results = [r for r in results if r.get("status") == "Prepoznat"]
+    else:
+        display_results = results
+
+    if not display_results:
+        badge_text = f"0 / {num_total} lica"
+        return f"""
+        <div class="detection-panel-inner">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <span class="pulse-icon active"></span> Real-time Detekcija
+                </div>
+                <span class="panel-badge active" style="color: #94a3b8; border-color: rgba(148, 163, 184, 0.4);">{badge_text}</span>
+            </div>
+            <div class="detection-empty-state">
+                <div class="radar-scan-box">
+                    <div class="radar-beam"></div>
+                </div>
+                <div class="empty-title" style="color: #f59e0b;">Nema prepoznatih lica</div>
+                <div class="empty-sub">
+                    Pronađeno je <b>{num_total}</b> lica u kadru, ali nijedno ne prelazi zadani prag.<br><br>
+                    Uključite kvačicu <i>"Prikaži i nepoznata lica"</i> iznad za prikaz svih lica s postotkom sličnosti ili snizite prag.
+                </div>
+            </div>
+        </div>
+        """
+
     cards = []
-    for r in results:
+    for r in display_results:
         success, buffer = cv2.imencode('.jpg', r["crop_bgr"])
         if success:
             img_b64 = base64.b64encode(buffer).decode('utf-8')
@@ -126,7 +163,7 @@ def generate_detection_cards_html(results):
         
         sim_val = r.get("similarity", 0)
         if isinstance(sim_val, (int, float)):
-            sim_str = f"{float(sim_val)*100:.0f}% Match"
+            sim_str = f"{float(sim_val)*100:.1f}% Match"
         else:
             sim_str = f"{sim_val} Match"
             
@@ -166,13 +203,18 @@ def generate_detection_cards_html(results):
         """)
         
     cards_html = "".join(cards)
+    if not show_all_faces:
+        badge_text = f"{num_recognized} prepoznato" if num_recognized == num_total else f"{num_recognized} / {num_total} lica"
+    else:
+        badge_text = f"{num_total} lica"
+        
     return f"""
     <div class="detection-panel-inner">
         <div class="panel-header">
             <div class="panel-title">
                 <span class="pulse-icon active"></span> Real-time Detekcija
             </div>
-            <span class="panel-badge active">{len(results)} lica</span>
+            <span class="panel-badge active">{badge_text}</span>
         </div>
         <div class="cyber-cards-scroll">
             {cards_html}
@@ -181,13 +223,13 @@ def generate_detection_cards_html(results):
     """
 
 # ---------------- PREPOZNAVANJE ----------------
-def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
+def recognize_faces(image, threshold, draw_landmarks, blur_unknown, show_all_faces=False):
     if image is None:
-        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), [], generate_detection_cards_html([])
+        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
     
     img_bgr, err = imread_unicode(image)
     if img_bgr is None:
-        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), [], generate_detection_cards_html([])
+        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
         
     annotated_bgr, results = face_engine.process_and_annotate(
         img_bgr,
@@ -232,7 +274,7 @@ def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
     
     summary = f"🔍 Pronađeno lica: **{len(results)}** | ✅ Prepoznato: **{num_recognized}** | ⚠️ Moguće (ispod praga): **{num_possible}** | ❌ Nepoznato: **{num_unknown}**"
     dropdown_update = gr.update(choices=candidate_choices, value=candidate_choices[0] if candidate_choices else None)
-    cards_html = generate_detection_cards_html(results)
+    cards_html = generate_detection_cards_html(results, show_all_faces=show_all_faces)
     return annotated_rgb, crops_gallery, table_data, summary, dropdown_update, results, cards_html
 
 def on_recognition_gallery_click(evt: gr.SelectData, rec_faces):
@@ -1098,17 +1140,17 @@ def on_reset_snapshot_dir_click():
     g, t, info, dd, prev, desc = get_snapshots_ui_data()
     return f"Vraćeno na zadanu mapu: `{config.DEFAULT_SNAPSHOT_DIR}`", config.DEFAULT_SNAPSHOT_DIR, info, g, t, dd, prev, desc
 
-def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur):
+def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur, show_all_faces=False):
     if not filename:
-        return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], generate_detection_cards_html([]), "⚠️ Nema odabrane snimke."
+        return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], generate_detection_cards_html([], show_all_faces=show_all_faces), "⚠️ Nema odabrane snimke."
     snap_dir = config.get_snapshot_dir()
     path = os.path.join(snap_dir, filename)
     if not os.path.isfile(path):
-        return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], generate_detection_cards_html([]), "⚠️ Datoteka nije pronađena."
+        return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], generate_detection_cards_html([], show_all_faces=show_all_faces), "⚠️ Datoteka nije pronađena."
     
     pil_img = Image.open(path).convert("RGB")
     annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html = recognize_faces(
-        pil_img, threshold, landmarks, blur
+        pil_img, threshold, landmarks, blur, show_all_faces=show_all_faces
     )
     msg = f"✅ Kadar `{filename}` je prebačen u Tab 1 i analiziran!"
     return pil_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html, msg
@@ -1294,6 +1336,373 @@ def handle_export_events_csv():
             ])
     return gr.update(value=export_path, visible=True), f"✅ Uspješno izvezeno {len(events)} prolazaka u CSV!"
 
+# ---------------- PAMETNI SORTER FOTOGRAFIJA HELPERS ----------------
+active_sorter_instance: Optional[photo_sorter.PhotoSorter] = None
+
+def select_folder_dialog(title="Odaberite mapu", initial_dir=None) -> str:
+    """Otvara nativni Windows dijalog za grafički odabir mape."""
+    init_d = str(initial_dir or "").strip().strip("'\"")
+    if not os.path.isdir(init_d):
+        init_d = ""
+
+    # 1. Pokušaj preko Tkinter (ugrađen i brz)
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.focus_force()
+        selected = filedialog.askdirectory(title=title, initialdir=init_d or None)
+        root.destroy()
+        if selected:
+            return os.path.normpath(selected)
+    except Exception:
+        pass
+
+    # 2. Fallback preko PowerShell FolderBrowserDialog
+    try:
+        import subprocess
+        init_arg = f"$d.SelectedPath = '{init_d}';" if init_d else ""
+        ps_code = f"""
+        Add-Type -AssemblyName System.Windows.Forms
+        $d = New-Object System.Windows.Forms.FolderBrowserDialog
+        $d.Description = '{title}'
+        $d.ShowNewFolderButton = $true
+        {init_arg}
+        if ($d.ShowDialog((New-Object System.Windows.Forms.NativeWindow)) -eq [System.Windows.Forms.DialogResult]::OK) {{
+            Write-Output $d.SelectedPath
+        }}
+        """
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_code],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        out = proc.stdout.strip()
+        if out and os.path.isdir(out):
+            return os.path.normpath(out)
+    except Exception:
+        pass
+
+    return ""
+
+def is_dir_writable(path: str) -> bool:
+    """Provjerava može li se pisati u zadanu mapu."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        test_file = os.path.join(path, f".uniface_perm_test_{os.getpid()}")
+        with open(test_file, "w") as f:
+            f.write("ok")
+        os.remove(test_file)
+        return True
+    except Exception:
+        return False
+
+def get_smart_default_output_dir(input_folder_path: str) -> str:
+    """
+    Predlaže optimalnu i zajamčeno upisivu mapu za sortirane fotografije.
+    1. Pokušava <roditelj>/<ime>_SORTIRANO (na istom disku).
+    2. Ako roditelj nema dozvolu pisanja (npr. vanjski disk s restriktivnim NTFS ovlastima):
+       pokušava na korijenu istog diska <Drive>:\\UniFace_Sortirano\\<ime>_SORTIRANO (omogućuje Hardlink!).
+    3. Ako ni to nije dostupno, nudi korisničku mapu Slike na C:\\.
+    """
+    clean_in = os.path.abspath(input_folder_path.strip().strip("'\""))
+    base_name = os.path.basename(clean_in) or "Fotografije"
+    parent_dir = os.path.dirname(clean_in)
+
+    candidate_1 = os.path.join(parent_dir, f"{base_name}_SORTIRANO")
+    if is_dir_writable(candidate_1):
+        return candidate_1
+
+    drive, _ = os.path.splitdrive(clean_in)
+    if drive:
+        candidate_2 = os.path.join(drive + os.sep, "UniFace_Sortirano", f"{base_name}_SORTIRANO")
+        if is_dir_writable(candidate_2):
+            return candidate_2
+
+    user_pictures = os.path.join(os.path.expanduser("~"), "Pictures", "UniFace_Sortirano", f"{base_name}_SORTIRANO")
+    if is_dir_writable(user_pictures):
+        return user_pictures
+
+    return os.path.join(APP_DIR, "data", "sortirano", f"{base_name}_SORTIRANO")
+
+def get_sorter_person_choices():
+    """Vraća listu imena osoba iz baze za odabir u sorteru."""
+    try:
+        persons = db.get_all_persons()
+        return [f"{p['name']} (ID: {p['id']})" for p in persons]
+    except Exception:
+        return []
+
+def handle_validate_input_folder(input_folder_path: str):
+    """Provjerava postojanje ulazne mape i broji podržane fotografije."""
+    path = (input_folder_path or "").strip().strip('"\'')
+    if not path:
+        return "⚠️ Unesite putanju do mape s fotografijama ili kliknite 'Odaberi mapu...'.", ""
+    if not os.path.isdir(path):
+        return f"❌ Mapa ne postoji ili nije dostupna: `{path}`", ""
+    
+    files = []
+    for root, _, filenames in os.walk(path):
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in photo_sorter.SUPPORTED_IMAGE_EXTS:
+                files.append(os.path.join(root, fn))
+    
+    count = len(files)
+    if count == 0:
+        return f"⚠️ U mapi `{path}` nije pronađena niti jedna slika (JPG, PNG, WebP...).", ""
+    
+    default_out = get_smart_default_output_dir(path)
+    return (
+        f"✅ **Pronađeno {count} fotografija** spremnih za analizu i sortiranje.\n"
+        f"📁 Ulazna lokacija: `{os.path.abspath(path)}`\n"
+        f"💾 Predloženo odredište: `{default_out}`",
+        default_out
+    )
+
+def on_browse_input_folder(current_val):
+    chosen = select_folder_dialog("Odaberite mapu s fotografijama", current_val)
+    if not chosen:
+        return gr.update(), gr.update(), gr.update()
+    info_md, def_out = handle_validate_input_folder(chosen)
+    return chosen, info_md, def_out
+
+def on_browse_output_folder(current_val):
+    chosen = select_folder_dialog("Odaberite odredišnu mapu za sortirane fotografije", current_val)
+    if not chosen:
+        return gr.update()
+    return chosen
+
+def handle_start_photo_sorting(
+    input_folder: str,
+    output_folder: str,
+    target_person_labels: list,
+    similarity_thresh: float,
+    action_mode: str,
+    enable_combo: bool,
+    enable_group: bool,
+    group_min_faces: float,
+    enable_noface: bool,
+    enable_unregistered: bool,
+    resolution_mode: str
+):
+    """Pokreće sortiranje i stream-a napredak u Gradio UI."""
+    global active_sorter_instance
+
+    in_dir = (input_folder or "").strip().strip('"\'')
+    out_dir = (output_folder or "").strip().strip('"\'')
+
+    if not in_dir or not os.path.isdir(in_dir):
+        yield (
+            "❌ **Greška:** Ulazna mapa ne postoji ili nije dostupna!",
+            "",
+            None,
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            gr.update(interactive=False)
+        )
+        return
+
+    if not out_dir:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(in_dir)), f"{os.path.basename(os.path.abspath(in_dir))}_SORTIRANO")
+
+    target_ids = []
+    if target_person_labels:
+        for lbl in target_person_labels:
+            if "(ID: " in lbl:
+                try:
+                    pid = int(lbl.split("(ID: ")[-1].rstrip(")"))
+                    target_ids.append(pid)
+                except Exception:
+                    pass
+
+    if "hardlink" in (action_mode or "").lower():
+        file_action = "hardlink"
+    elif "premjesti" in (action_mode or "").lower() or "move" in (action_mode or "").lower():
+        file_action = "move"
+    else:
+        file_action = "copy"
+
+    if "1280" in (resolution_mode or ""):
+        max_dim = 1280
+    elif "2048" in (resolution_mode or ""):
+        max_dim = 2048
+    else:
+        max_dim = 1600
+
+    sorter = photo_sorter.PhotoSorter(
+        input_dir=in_dir,
+        output_dir=out_dir,
+        target_person_ids=target_ids if target_ids else None,
+        threshold=float(similarity_thresh),
+        file_action=file_action,
+        group_min_faces=int(group_min_faces or 4),
+        enable_group_folder=bool(enable_group),
+        enable_combo_folder=bool(enable_combo),
+        enable_no_face_folder=bool(enable_noface),
+        enable_unregistered_folder=bool(enable_unregistered),
+        max_det_dim=max_dim,
+        device="CPU"
+    )
+    active_sorter_instance = sorter
+
+    prog_q = queue.Queue()
+
+    def progress_cb(data):
+        prog_q.put(data)
+
+    worker_res = {}
+    def worker():
+        try:
+            worker_res["result"] = sorter.run(progress_callback=progress_cb)
+        except Exception as e:
+            worker_res["error"] = str(e)
+        finally:
+            prog_q.put({"__done__": True})
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    last_status = "🚀 Inicijalizacija biometrijskog modela i indeksiranje uzoraka..."
+    last_stats = ""
+
+    while t.is_alive() or not prog_q.empty():
+        try:
+            item = prog_q.get(timeout=0.25)
+        except queue.Empty:
+            continue
+
+        if "__done__" in item:
+            break
+
+        cur = item.get("current", 0)
+        tot = item.get("total", 0)
+        pct = item.get("percent", 0.0)
+        fps = item.get("fps", 0.0)
+        eta = item.get("eta_sec", 0)
+        matched_photos = item.get("matched_photos", 0)
+        total_faces = item.get("total_faces", 0)
+        cur_file = item.get("current_file", "")
+        p_stats = item.get("stats_by_person", {})
+
+        eta_str = f"{eta // 60}m {eta % 60}s" if eta >= 60 else f"{eta}s"
+        last_status = (
+            f"🔄 **Obrada u tijeku: {cur} / {tot} slika ({pct}%)** &nbsp;|&nbsp; "
+            f"⚡ **Brzina:** `{fps:.1f} slika/s` &nbsp;|&nbsp; ⏳ **Preostalo:** `{eta_str}`\n\n"
+            f"📄 Trenutna fotografija: `{cur_file}`"
+        )
+
+        breakdown_lines = [f"* **{pname}:** `{cnt}` fotografija" for pname, cnt in sorted(p_stats.items(), key=lambda x: x[1], reverse=True)]
+        breakdown_text = "\n".join(breakdown_lines) if breakdown_lines else "*Čekanje na prva prepoznavanja lica...*"
+
+        last_stats = (
+            f"### 📊 Statistika u stvarnom vremenu\n"
+            f"* **Ukupno analizirano fotografija:** `{cur} / {tot}`\n"
+            f"* **Fotografija s prepoznatim osobama:** `{matched_photos}`\n"
+            f"* **Ukupno pronađeno lica:** `{total_faces}`\n\n"
+            f"#### 👥 Razvrstano po mapama osoba:\n{breakdown_text}"
+        )
+
+        yield (
+            last_status,
+            last_stats,
+            gr.update(visible=False),
+            gr.update(interactive=False),
+            gr.update(interactive=True),
+            gr.update(interactive=False)
+        )
+
+    t.join()
+
+    res = worker_res.get("result", {})
+    err = worker_res.get("error", None)
+
+    if err:
+        yield (
+            f"❌ **Došlo je do greške tijekom obrade:** {err}",
+            last_stats,
+            gr.update(visible=False),
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            gr.update(interactive=True)
+        )
+        return
+
+    if res.get("status") == "error":
+        yield (
+            f"⚠️ **Prekid:** {res.get('message', 'Nepoznata greška')}",
+            last_stats,
+            gr.update(visible=False),
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            gr.update(interactive=False)
+        )
+        return
+
+    is_cancelled = (res.get("status") == "cancelled")
+    status_icon = "🛑" if is_cancelled else "✅"
+    status_title = "Sortiranje je prekinuto od strane korisnika" if is_cancelled else "Sortiranje je uspješno završeno!"
+
+    fin_status = (
+        f"{status_icon} **{status_title}**\n\n"
+        f"* **Obrađeno fotografija:** `{res.get('processed', 0)}` od `{res.get('total_files', 0)}`\n"
+        f"* **Fotografija s prepoznatim osobama:** `{res.get('matched_photos', 0)}`\n"
+        f"* **Detektirano lica ukupno:** `{res.get('total_faces', 0)}`\n"
+        f"* **Prosječna brzina:** `{res.get('avg_fps', 0.0)} slika/s` (ukupno vrijeme: `{res.get('elapsed_sec', 0)}s`)\n"
+        f"* 📂 **Odredišna mapa:** `{out_dir}`"
+    )
+
+    p_stats = res.get("stats_by_person", {})
+    breakdown_lines = [f"* **{pname}:** `{cnt}` fotografija" for pname, cnt in sorted(p_stats.items(), key=lambda x: x[1], reverse=True)]
+    breakdown_text = "\n".join(breakdown_lines) if breakdown_lines else "*Nema prepoznatih osoba s odabranim pragom točnosti.*"
+
+    fin_stats = (
+        f"### 🏆 Završni rezultati sortiranja\n"
+        f"* **Odredišna mapa:** `{out_dir}`\n"
+        f"* **Način prijenosa:** `{file_action.upper()}`\n\n"
+        f"#### 👥 Ukupno slika po mapama osoba:\n{breakdown_text}"
+    )
+
+    report_f = res.get("report_path")
+    csv_local_path = None
+    if report_f and os.path.exists(report_f):
+        try:
+            csv_local_path = os.path.join(DATA_DIR, "zadnji_izvjestaj_sortiranja.csv")
+            shutil.copy2(report_f, csv_local_path)
+        except Exception:
+            csv_local_path = None
+
+    csv_update = gr.update(value=csv_local_path, visible=bool(csv_local_path and os.path.exists(csv_local_path)))
+
+    yield (
+        fin_status,
+        fin_stats,
+        csv_update,
+        gr.update(interactive=True),
+        gr.update(interactive=False),
+        gr.update(interactive=True)
+    )
+
+def handle_cancel_photo_sorting():
+    global active_sorter_instance
+    if active_sorter_instance and active_sorter_instance.is_running:
+        active_sorter_instance.cancel()
+        return "⏳ Zaustavljanje sortiranja u tijeku... Molimo pričekajte trenutnu datoteku."
+    return "ℹ️ Nema aktivnog procesa sortiranja."
+
+def handle_open_sorter_folder(folder_path: str):
+    path = (folder_path or "").strip().strip('"\'')
+    if path and os.path.isdir(path):
+        config.open_folder_in_explorer(path)
+        return f"📂 Otvorena mapa u Exploreru: `{path}`"
+    elif path and os.path.exists(os.path.dirname(path)):
+        config.open_folder_in_explorer(os.path.dirname(path))
+        return f"📂 Otvorena mapa u Exploreru: `{os.path.dirname(path)}`"
+    return "⚠️ Mapa još ne postoji."
+
 # ---------------- GRADIO UI THEME & CYBER STYLING ----------------
 CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -1325,8 +1734,13 @@ CUSTOM_CSS = """
     --input-border-color: rgba(56, 189, 248, 0.25) !important;
     --input-placeholder-color: #64748b !important;
     --checkbox-background-color: #090d16 !important;
+    --checkbox-background-color-selected: #0284c7 !important;
+    --checkbox-border-color: rgba(56, 189, 248, 0.45) !important;
+    --checkbox-border-color-selected: #38bdf8 !important;
     --checkbox-label-background-fill: #0d1424 !important;
+    --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.15) !important;
     --checkbox-label-text-color: #f8fafc !important;
+    --checkbox-label-text-color-selected: #38bdf8 !important;
     --panel-background-fill: #0d1424 !important;
     --table-even-background-fill: #0d1424 !important;
     --table-odd-background-fill: #090d16 !important;
@@ -1568,20 +1982,136 @@ fieldset.block,
 div.block,
 .gradio-checkbox,
 label:has(input[type="checkbox"]),
+label:has(input[type="radio"]),
 label.checkbox-label {
     background: rgba(13, 20, 36, 0.9) !important;
     background-color: rgba(13, 20, 36, 0.9) !important;
     border: 1px solid rgba(56, 189, 248, 0.22) !important;
     border-radius: 10px !important;
     color: #f8fafc !important;
+    transition: all 0.2s ease !important;
+}
+
+label:has(input[type="checkbox"]:checked),
+label:has(input[type="radio"]:checked) {
+    background: rgba(14, 165, 233, 0.12) !important;
+    border-color: rgba(56, 189, 248, 0.55) !important;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.15) !important;
 }
 
 label.block span,
 label:has(input[type="checkbox"]) span,
+label:has(input[type="radio"]) span,
 .gradio-checkbox span,
+.gradio-radio span,
 .block span {
     color: #f8fafc !important;
     font-weight: 500 !important;
+}
+
+label:has(input[type="checkbox"]:checked) span,
+label:has(input[type="radio"]:checked) span {
+    color: #38bdf8 !important;
+    font-weight: 600 !important;
+}
+
+label:has(input[type="checkbox"]),
+label:has(input[type="radio"]),
+label.checkbox-label,
+.gradio-checkbox label,
+.gradio-radio label {
+    cursor: pointer !important;
+    user-select: none !important;
+}
+
+/* Explicit Cyber Checkbox Styling */
+input[type="checkbox"] {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
+    width: 20px !important;
+    height: 20px !important;
+    min-width: 20px !important;
+    min-height: 20px !important;
+    max-width: 20px !important;
+    max-height: 20px !important;
+    margin: 0 10px 0 0 !important;
+    cursor: pointer !important;
+    background-color: #090d16 !important;
+    border: 2px solid rgba(56, 189, 248, 0.5) !important;
+    border-radius: 5px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    vertical-align: middle !important;
+    position: relative !important;
+    outline: none !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+    flex-shrink: 0 !important;
+}
+
+input[type="checkbox"]:hover {
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4), inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+}
+
+input[type="checkbox"]:checked {
+    background-color: #0284c7 !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'%3E%3C/polyline%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: center !important;
+    background-size: 14px 14px !important;
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.7), inset 0 1px 2px rgba(255, 255, 255, 0.2) !important;
+}
+
+/* Explicit Cyber Radio Styling */
+input[type="radio"] {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
+    width: 20px !important;
+    height: 20px !important;
+    min-width: 20px !important;
+    min-height: 20px !important;
+    max-width: 20px !important;
+    max-height: 20px !important;
+    margin: 0 10px 0 0 !important;
+    cursor: pointer !important;
+    background-color: #090d16 !important;
+    border: 2px solid rgba(56, 189, 248, 0.5) !important;
+    border-radius: 50% !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    vertical-align: middle !important;
+    position: relative !important;
+    outline: none !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+    flex-shrink: 0 !important;
+}
+
+input[type="radio"]:hover {
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4) !important;
+}
+
+input[type="radio"]:checked {
+    background-color: #090d16 !important;
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.7) !important;
+}
+
+input[type="radio"]:checked::after {
+    content: '' !important;
+    display: block !important;
+    width: 10px !important;
+    height: 10px !important;
+    border-radius: 50% !important;
+    background: linear-gradient(135deg, #0284c7 0%, #38bdf8 100%) !important;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.9) !important;
 }
 
 label.block p,
@@ -1625,7 +2155,7 @@ label > span.label-text,
 }
 
 /* Inputs, Textareas, Textboxes, and Markdown blocks */
-input,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 textarea,
 select,
 .gr-input,
@@ -2145,13 +2675,17 @@ custom_theme = gr.themes.Soft(
     input_placeholder_color="#64748b",
     input_placeholder_color_dark="#64748b",
     checkbox_background_color="#090d16",
+    checkbox_background_color_selected="#0284c7",
     checkbox_background_color_dark="#090d16",
+    checkbox_background_color_selected_dark="#0284c7",
+    checkbox_border_color="rgba(56, 189, 248, 0.45)",
+    checkbox_border_color_selected="#38bdf8",
+    checkbox_border_color_dark="rgba(56, 189, 248, 0.45)",
+    checkbox_border_color_selected_dark="#38bdf8",
     checkbox_label_background_fill="#0d1424",
     checkbox_label_background_fill_dark="#0d1424",
     checkbox_label_text_color="#f8fafc",
     checkbox_label_text_color_dark="#f8fafc",
-    checkbox_border_color="rgba(56, 189, 248, 0.3)",
-    checkbox_border_color_dark="rgba(56, 189, 248, 0.3)",
     accordion_text_color="#f8fafc",
     accordion_text_color_dark="#f8fafc",
     table_even_background_fill="#0d1424",
@@ -2369,8 +2903,13 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
                 # 3. Desni stupac: Real-time Detection panel (cca 25% širine)
                 with gr.Column(scale=3, min_width=270, elem_classes=["cyber-card"]):
+                    cards_show_all_chk = gr.Checkbox(
+                        value=False,
+                        label="Prikaži i nepoznata lica (% sličnosti)",
+                        info="Zadano: prikaz samo prepoznatih (zelena)"
+                    )
                     detection_cards_html = gr.HTML(
-                        value=generate_detection_cards_html([]),
+                        value=generate_detection_cards_html([], show_all_faces=False),
                         elem_classes=["detection-panel-container"]
                     )
                     
@@ -2728,7 +3267,119 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                 events_export_file = gr.File(label="Preuzmi izvezenu CSV datoteku", visible=False, scale=2)
             events_status_md = gr.Markdown("")
 
-        # ------------------ TAB 5: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
+        # ------------------ TAB 5: PAMETNI SORTER FOTOGRAFIJA ------------------
+        with gr.TabItem("📸 Pametni Sorter Fotografija") as tab_photo_sorter:
+            gr.Markdown(
+                """
+                ## 📸 Pametni Sorter Fotografija — Automatsko razvrstavanje po osobama
+                *Univerzalni biometrijski modul za automatsko razvrstavanje velikih mapa i arhiva fotografija (događaji, konferencije, natjecanja, portreti, poslovni i privatni albumi) po prepoznatim osobama uz instantno povezivanje (Windows Hardlink - 0 MB dodatnog zauzeća diska).*
+                """
+            )
+            
+            with gr.Row():
+                with gr.Column(scale=5):
+                    with gr.Group():
+                        gr.Markdown("### 📂 Odabir mapa i ulaznih fotografija")
+                        with gr.Row():
+                            sorter_input_folder = gr.Textbox(
+                                label="📁 Izvorna mapa s fotografijama",
+                                placeholder="Kliknite 'Odaberi mapu...' ili upišite punu putanju...",
+                                scale=4
+                            )
+                            btn_browse_input_folder = gr.Button("📂 Odaberi mapu...", scale=1, variant="primary")
+                            btn_check_input_folder = gr.Button("🔍 Provjeri", scale=1, variant="secondary")
+                        
+                        sorter_folder_info_md = gr.Markdown("💡 *Kliknite 'Odaberi mapu...' za brzo pronalaženje ili upišite putanju.*")
+                        
+                        with gr.Row():
+                            sorter_output_folder = gr.Textbox(
+                                label="📂 Odredišna mapa za sortirane fotografije",
+                                placeholder="Zadano: automatski predložena upisiva lokacija",
+                                info="Mape za prepoznate osobe, zajedničke kadrove, grupe i fotografije bez lica kreirat će se unutar ove lokacije.",
+                                scale=4
+                            )
+                            btn_browse_output_folder = gr.Button("📂 Promijeni odredište...", scale=1, variant="secondary")
+
+                    with gr.Group():
+                        gr.Markdown("### ⚙️ Postavke biometrijskog razvrstavanja")
+                        sorter_target_persons = gr.Dropdown(
+                            label="👥 Odaberite ciljane osobe za sortiranje (ostavite prazno za sve osobe iz baze)",
+                            choices=get_sorter_person_choices(),
+                            multiselect=True,
+                            interactive=True,
+                            info="Odaberite specifične osobe koje želite izdvojiti ili ostavite prazno za automatsko sortiranje svih osoba iz baze."
+                        )
+                        
+                        with gr.Row():
+                            sorter_similarity = gr.Slider(
+                                minimum=0.35,
+                                maximum=0.75,
+                                value=0.48,
+                                step=0.01,
+                                label="🎯 Biometrijski prag sličnosti (Threshold)",
+                                info="0.48 je optimalna točnost. Niže = više ulova pri lošijem kutu; Više = maksimalna sigurnost."
+                            )
+                            sorter_resolution = gr.Dropdown(
+                                label="⚡ Brzina / Rezolucija analize",
+                                choices=[
+                                    "Brzo (1280px - za starija računala)",
+                                    "Uravnoteženo (1600px - preporučeno)",
+                                    "Maksimalna točnost (2048px - za velike grupne kadrove)"
+                                ],
+                                value="Uravnoteženo (1600px - preporučeno)",
+                                info="Originalna datoteka se nikada ne dira niti komprimira."
+                            )
+
+                        sorter_action_mode = gr.Radio(
+                            label="💾 Način prijenosa datoteka u sortirane mape",
+                            choices=[
+                                "⚡ Windows Hardlink (preporučeno - instantno, troši 0 MB dodatnog diska)",
+                                "📋 Kopiraj datoteke (stvara fizičke kopije na disku)",
+                                "🚚 Premjesti datoteke (Move)"
+                            ],
+                            value="⚡ Windows Hardlink (preporučeno - instantno, troši 0 MB dodatnog diska)",
+                            info="Hardlink omogućuje da slika bude u više mapa istovremeno bez trošenja dodatnih gigabajta!"
+                        )
+
+                        gr.Markdown("#### 🏷️ Pametna organizacija posebnih mapa")
+                        with gr.Row():
+                            sorter_enable_combo = gr.Checkbox(
+                                label="👥 Kreiraj mapu 'Zajedno_Ciljane_Osobe' (kad je 2+ ciljanih osoba na istoj slici)",
+                                value=True
+                            )
+                            sorter_enable_group = gr.Checkbox(
+                                label="👨‍👩‍👧‍👦 Kreiraj mapu 'Grupne_Fotografije'",
+                                value=True
+                            )
+                            sorter_group_min = gr.Number(
+                                label="Minimalno lica za grupu",
+                                value=4,
+                                precision=0,
+                                scale=1
+                            )
+                        with gr.Row():
+                            sorter_enable_noface = gr.Checkbox(
+                                label="🖼️ Izdvoji fotografije bez lica u 'Fotografije_Bez_Lica' (objekti, arhitektura, pejzaži, detalji)",
+                                value=True
+                            )
+                            sorter_enable_unregistered = gr.Checkbox(
+                                label="👤 Izdvoji osobe koje nisu u bazi u 'Neregistrirana_Lica'",
+                                value=False
+                            )
+
+                    with gr.Row():
+                        btn_start_sorter = gr.Button("🚀 Pokreni automatsko sortiranje", variant="primary", scale=3)
+                        btn_cancel_sorter = gr.Button("🛑 Zaustavi obradu", variant="stop", scale=1, interactive=False)
+                        btn_open_sorter_dir = gr.Button("📂 Otvori mapu u Exploreru", variant="secondary", scale=2)
+
+                with gr.Column(scale=4):
+                    with gr.Group():
+                        gr.Markdown("### 📈 Status obrade i metrike u stvarnom vremenu")
+                        sorter_status_md = gr.Markdown("⏳ *Sustav je spreman. Odaberite mapu s fotografijama i pokrenite sortiranje.*")
+                        sorter_stats_breakdown_md = gr.Markdown("")
+                        sorter_export_csv_file = gr.File(label="📥 Preuzmi CSV izvještaj sortiranja (Excel)", visible=False)
+
+        # ------------------ TAB 6: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
         with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
             with gr.Row():
                 with gr.Column(scale=1):
@@ -2870,10 +3521,44 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[batch_status_md, manage_person_dropdown, existing_person_picker, db_table, db_stats_md]
     )
     
+    def on_analysis_param_change(image, threshold, draw_landmarks, blur_unknown, show_all_faces):
+        if image is None:
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        return recognize_faces(image, threshold, draw_landmarks, blur_unknown, show_all_faces=show_all_faces)
+
+    def on_cards_filter_toggle(rec_faces, show_all):
+        if not rec_faces:
+            return generate_detection_cards_html([], show_all_faces=show_all)
+        return generate_detection_cards_html(rec_faces, show_all_faces=show_all)
+
     btn_recognize.click(
         fn=recognize_faces,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
         outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    landmarks_chk.change(
+        fn=on_analysis_param_change,
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    blur_chk.change(
+        fn=on_analysis_param_change,
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    threshold_slider.release(
+        fn=on_analysis_param_change,
+        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    )
+
+    cards_show_all_chk.change(
+        fn=on_cards_filter_toggle,
+        inputs=[rec_faces_state, cards_show_all_chk],
+        outputs=[detection_cards_html]
     )
 
     def on_live_mode_change(m):
@@ -3040,7 +3725,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
     btn_send_to_rec.click(
         fn=on_send_snapshot_to_recognition,
-        inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_chk],
+        inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
         outputs=[input_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html, snap_action_status]
     )
 
@@ -3136,6 +3821,68 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             existing_person_picker,
             system_info_md
         ]
+    )
+
+    # ------------------ EVENT HANDLERS: TAB 6 PHOTO SORTER ------------------
+    btn_browse_input_folder.click(
+        fn=on_browse_input_folder,
+        inputs=[sorter_input_folder],
+        outputs=[sorter_input_folder, sorter_folder_info_md, sorter_output_folder]
+    )
+
+    btn_browse_output_folder.click(
+        fn=on_browse_output_folder,
+        inputs=[sorter_output_folder],
+        outputs=[sorter_output_folder]
+    )
+
+    btn_check_input_folder.click(
+        fn=handle_validate_input_folder,
+        inputs=[sorter_input_folder],
+        outputs=[sorter_folder_info_md, sorter_output_folder]
+    )
+
+    btn_start_sorter.click(
+        fn=handle_start_photo_sorting,
+        inputs=[
+            sorter_input_folder,
+            sorter_output_folder,
+            sorter_target_persons,
+            sorter_similarity,
+            sorter_action_mode,
+            sorter_enable_combo,
+            sorter_enable_group,
+            sorter_group_min,
+            sorter_enable_noface,
+            sorter_enable_unregistered,
+            sorter_resolution
+        ],
+        outputs=[
+            sorter_status_md,
+            sorter_stats_breakdown_md,
+            sorter_export_csv_file,
+            btn_start_sorter,
+            btn_cancel_sorter,
+            btn_open_sorter_dir
+        ]
+    )
+
+    btn_cancel_sorter.click(
+        fn=handle_cancel_photo_sorting,
+        inputs=[],
+        outputs=[sorter_status_md]
+    )
+
+    btn_open_sorter_dir.click(
+        fn=handle_open_sorter_folder,
+        inputs=[sorter_output_folder],
+        outputs=[sorter_status_md]
+    )
+
+    tab_photo_sorter.select(
+        fn=lambda: gr.update(choices=get_sorter_person_choices()),
+        inputs=[],
+        outputs=[sorter_target_persons]
     )
 
     demo.load(
