@@ -80,7 +80,7 @@ class NVRChannelRecorder:
         self.lock = threading.Lock()
         self.is_active = False
 
-        self.fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.fourcc = cv2.VideoWriter_fourcc(*'avc1')
 
     def start(self):
         with self.lock:
@@ -117,15 +117,23 @@ class NVRChannelRecorder:
         filename = f"rec_cam{self.cam_id}_{safe_name}_{t_stamp}.mp4"
         self.current_video_path = os.path.join(day_dir, filename)
 
-        self.writer = cv2.VideoWriter(
-            self.current_video_path,
-            self.fourcc,
-            self.fps,
-            (frame_w, frame_h)
-        )
+        # Prefer standard H.264 (avc1) for 100% native HTML5 web browser playback
+        writer = None
+        for tag in ['avc1', 'H264', 'mp4v']:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*tag)
+                w = cv2.VideoWriter(self.current_video_path, fourcc, self.fps, (frame_w, frame_h))
+                if w.isOpened():
+                    writer = w
+                    break
+                else:
+                    w.release()
+            except Exception:
+                pass
+        self.writer = writer
         self.segment_start_time = time.time()
         self.segment_frames = 0
-        print(f"[NVR RECORDER] Započet novi segment: {filename} ({frame_w}x{frame_h} @ {self.fps} FPS)")
+        print(f"[NVR RECORDER] Započet novi segment: {filename} ({frame_w}x{frame_h} @ {self.fps} FPS, H.264)")
 
         # Periodically trigger background cleanup
         threading.Thread(target=cleanup_old_recordings, args=(self.recordings_dir, self.max_storage_gb), daemon=True).start()
