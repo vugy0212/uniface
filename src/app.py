@@ -1631,7 +1631,7 @@ custom_theme = gr.themes.Soft(
     neutral_hue="slate"
 )
 
-with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica", theme=custom_theme, css=CUSTOM_CSS) as demo:
+with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     # Per-session state (eliminates global variables and multi-user race conditions)
     rec_faces_state = gr.State([])
     single_enroll_state = gr.State({
