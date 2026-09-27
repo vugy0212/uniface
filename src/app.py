@@ -1292,11 +1292,11 @@ def handle_export_events_csv():
 CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
-:root {
+:root, :root.dark, :root.light, html, body {
     --cyber-bg: #070a12;
     --cyber-card: #0d1424;
     --cyber-card-elevated: #111a30;
-    --cyber-card-border: rgba(56, 189, 248, 0.16);
+    --cyber-card-border: rgba(56, 189, 248, 0.22);
     --cyber-cyan: #06b6d4;
     --cyber-emerald: #10b981;
     --cyber-blue: #3b82f6;
@@ -1304,11 +1304,34 @@ CUSTOM_CSS = """
     --cyber-glow-emerald: 0 0 18px rgba(16, 185, 129, 0.35);
     --text-primary: #f8fafc;
     --text-muted: #94a3b8;
+
+    /* Enforce Dark Theme Tokens on Gradio internals */
+    --background-fill-primary: #070a12 !important;
+    --background-fill-secondary: #0d1424 !important;
+    --block-background-fill: #0d1424 !important;
+    --block-border-color: rgba(56, 189, 248, 0.22) !important;
+    --block-label-background-fill: #0d1424 !important;
+    --block-label-text-color: #38bdf8 !important;
+    --block-title-text-color: #f8fafc !important;
+    --body-text-color: #f8fafc !important;
+    --body-text-color-subdued: #94a3b8 !important;
+    --input-background-fill: #090d16 !important;
+    --input-border-color: rgba(56, 189, 248, 0.25) !important;
+    --input-placeholder-color: #64748b !important;
+    --checkbox-background-color: #090d16 !important;
+    --checkbox-label-background-fill: #0d1424 !important;
+    --checkbox-label-text-color: #f8fafc !important;
+    --panel-background-fill: #0d1424 !important;
+    --table-even-background-fill: #0d1424 !important;
+    --table-odd-background-fill: #090d16 !important;
+    --table-text-color: #f8fafc !important;
+    --border-color-primary: rgba(56, 189, 248, 0.22) !important;
+    color-scheme: dark !important;
 }
 
 body, html {
-    background-color: var(--cyber-bg) !important;
-    color: var(--text-primary) !important;
+    background-color: #070a12 !important;
+    color: #f8fafc !important;
     font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif !important;
     margin: 0;
     padding: 0;
@@ -1316,7 +1339,7 @@ body, html {
 
 .gradio-container {
     background: radial-gradient(circle at 50% 0%, #111d38 0%, #070a12 70%) !important;
-    color: var(--text-primary) !important;
+    color: #f8fafc !important;
     max-width: 98% !important;
     padding: 10px 16px !important;
 }
@@ -1453,40 +1476,233 @@ body, html {
     font-weight: bold;
 }
 
-/* Tabs Styling */
-.tabs > .tab-nav {
-    background: rgba(13, 20, 36, 0.7) !important;
+/* Tabs Styling - High Visibility & Crisp Contrast */
+.tabs > .tab-nav,
+div[role="tablist"] {
+    background: rgba(13, 20, 36, 0.85) !important;
     border-radius: 12px !important;
     padding: 6px !important;
-    border: 1px solid rgba(56, 189, 248, 0.14) !important;
-    gap: 6px !important;
+    border: 1px solid rgba(56, 189, 248, 0.25) !important;
+    gap: 8px !important;
     margin-bottom: 14px !important;
 }
 
-.tabs > .tab-nav > button {
-    color: #94a3b8 !important;
+.tabs > .tab-nav > button,
+div[role="tablist"] button,
+button[role="tab"] {
+    color: #cbd5e1 !important;
     font-weight: 600 !important;
+    font-size: 0.92rem !important;
     border-radius: 8px !important;
     padding: 8px 16px !important;
-    border: none !important;
+    border: 1px solid rgba(56, 189, 248, 0.15) !important;
+    background: rgba(15, 23, 42, 0.6) !important;
     transition: all 0.2s ease !important;
 }
 
-.tabs > .tab-nav > button:hover {
-    color: #ffffff !important;
-    background: rgba(255, 255, 255, 0.05) !important;
+.tabs > .tab-nav > button:hover,
+div[role="tablist"] button:hover,
+button[role="tab"]:hover {
+    color: #38bdf8 !important;
+    background: rgba(56, 189, 248, 0.15) !important;
+    border-color: rgba(56, 189, 248, 0.4) !important;
 }
 
-.tabs > .tab-nav > button.selected {
+.tabs > .tab-nav > button.selected,
+div[role="tablist"] button.selected,
+div[role="tablist"] button[aria-selected="true"],
+button[role="tab"][aria-selected="true"] {
     color: #ffffff !important;
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.25) 0%, rgba(16, 185, 129, 0.18) 100%) !important;
-    border: 1px solid rgba(6, 182, 212, 0.5) !important;
-    box-shadow: 0 0 15px rgba(6, 182, 212, 0.25) !important;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.35) 0%, rgba(16, 185, 129, 0.25) 100%) !important;
+    border: 1px solid rgba(6, 182, 212, 0.65) !important;
+    box-shadow: 0 0 16px rgba(6, 182, 212, 0.35) !important;
+}
+
+/* Image Upload & Dropzone - Eliminate ALL stark white backgrounds */
+.image-container,
+.upload-container,
+div[data-testid="image"],
+div[data-testid="image"] > div,
+.empty,
+.drop-zone,
+div.upload,
+.gr-box,
+div:has(> input[type="file"]) {
+    background: #0b111e !important;
+    background-color: #0b111e !important;
+    border: 1px dashed rgba(56, 189, 248, 0.35) !important;
+    border-radius: 12px !important;
+    color: #e2e8f0 !important;
+}
+
+.upload-container *,
+.image-container *,
+div[data-testid="image"] * {
+    color: #94a3b8 !important;
+}
+
+.upload-container button,
+div[data-testid="image"] button {
+    background: rgba(30, 41, 59, 0.85) !important;
+    border: 1px solid rgba(56, 189, 248, 0.35) !important;
+    color: #38bdf8 !important;
+    border-radius: 8px !important;
+}
+
+.upload-container button:hover,
+div[data-testid="image"] button:hover {
+    background: rgba(56, 189, 248, 0.25) !important;
+    color: #ffffff !important;
+}
+
+/* Checkboxes, Blocks, and Fieldsets */
+.block,
+label.block,
+fieldset.block,
+div.block,
+.gradio-checkbox,
+label:has(input[type="checkbox"]),
+label.checkbox-label {
+    background: rgba(13, 20, 36, 0.9) !important;
+    background-color: rgba(13, 20, 36, 0.9) !important;
+    border: 1px solid rgba(56, 189, 248, 0.22) !important;
+    border-radius: 10px !important;
+    color: #f8fafc !important;
+}
+
+label.block span,
+label:has(input[type="checkbox"]) span,
+.gradio-checkbox span,
+.block span {
+    color: #f8fafc !important;
+    font-weight: 500 !important;
+}
+
+label.block p,
+.block p,
+span.meta-text,
+p.meta-text {
+    color: #94a3b8 !important;
+    font-size: 0.82rem !important;
+}
+
+/* Accordions */
+.accordion,
+details,
+details > summary,
+.label-wrap,
+button.label-wrap,
+.cyber-accordion {
+    background: rgba(13, 20, 36, 0.9) !important;
+    background-color: rgba(13, 20, 36, 0.9) !important;
+    border: 1px solid rgba(56, 189, 248, 0.22) !important;
+    border-radius: 10px !important;
+    color: #f8fafc !important;
+}
+
+details > summary span,
+button.label-wrap span,
+.label-wrap .icon {
+    color: #38bdf8 !important;
+    font-weight: 600 !important;
+    font-size: 0.92rem !important;
+}
+
+/* Block Labels (Top-left titles on components) */
+span[data-testid="block-info"],
+.block-label,
+label > span.label-text,
+.label-wrap {
+    color: #38bdf8 !important;
+    font-weight: 600 !important;
+    background: transparent !important;
+}
+
+/* Inputs, Textareas, Textboxes, and Markdown blocks */
+input,
+textarea,
+select,
+.gr-input,
+.gr-text-input,
+div[data-testid="textbox"] textarea,
+div[data-testid="textbox"] input {
+    background: #090d16 !important;
+    background-color: #090d16 !important;
+    color: #f8fafc !important;
+    border: 1px solid rgba(56, 189, 248, 0.25) !important;
+    border-radius: 8px !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: #64748b !important;
+}
+
+/* Tables / Dataframes */
+table,
+.dataframe,
+.table-wrap,
+.table {
+    background: #0d1424 !important;
+    color: #f8fafc !important;
+    border: 1px solid rgba(56, 189, 248, 0.2) !important;
+    border-radius: 8px !important;
+}
+
+thead, th {
+    background: #111a30 !important;
+    color: #38bdf8 !important;
+    font-weight: 700 !important;
+    border-bottom: 2px solid rgba(56, 189, 248, 0.3) !important;
+}
+
+tbody tr {
+    background: #0d1424 !important;
+    color: #f8fafc !important;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.12) !important;
+}
+
+tbody tr:nth-child(even) {
+    background: #090d16 !important;
+}
+
+tbody tr:hover {
+    background: rgba(56, 189, 248, 0.15) !important;
+}
+
+td {
+    color: #f8fafc !important;
+    border-color: rgba(56, 189, 248, 0.12) !important;
+}
+
+/* Dropdowns */
+.dropdown,
+.select,
+div[data-testid="dropdown"] {
+    background: #090d16 !important;
+    color: #f8fafc !important;
+}
+
+ul.options,
+.options-wrap {
+    background: #0d1424 !important;
+    border: 1px solid rgba(56, 189, 248, 0.3) !important;
+    color: #f8fafc !important;
+}
+
+ul.options li {
+    color: #f8fafc !important;
+}
+
+ul.options li:hover,
+ul.options li.selected {
+    background: rgba(56, 189, 248, 0.2) !important;
+    color: #38bdf8 !important;
 }
 
 /* Cyber Cards & Panels */
 .cyber-card {
-    background: rgba(13, 20, 36, 0.8) !important;
+    background: rgba(13, 20, 36, 0.85) !important;
     backdrop-filter: blur(12px) !important;
     border: 1px solid var(--cyber-card-border) !important;
     border-radius: 14px !important;
@@ -1529,14 +1745,14 @@ body, html {
 }
 
 .btn-cyber-secondary {
-    background: rgba(30, 41, 59, 0.7) !important;
+    background: rgba(30, 41, 59, 0.8) !important;
     color: #e2e8f0 !important;
     border: 1px solid rgba(148, 163, 184, 0.25) !important;
     border-radius: 10px !important;
 }
 
 .btn-cyber-secondary:hover {
-    background: rgba(51, 65, 85, 0.8) !important;
+    background: rgba(51, 65, 85, 0.9) !important;
     border-color: rgba(56, 189, 248, 0.5) !important;
     color: #ffffff !important;
 }
@@ -1809,19 +2025,11 @@ body, html {
     border: 1px solid rgba(100, 116, 139, 0.35);
 }
 
-/* Accordions */
-.cyber-accordion {
-    background: rgba(15, 23, 42, 0.5) !important;
-    border: 1px solid rgba(56, 189, 248, 0.12) !important;
-    border-radius: 10px !important;
-    margin-top: 8px !important;
-}
-
 input[type="range"] {
     accent-color: #06b6d4 !important;
 }
 
-/* Person Mini-Avatar Thumbnail (HTML-based for instantaneous, flicker-free render) */
+/* Person Mini-Avatar Thumbnail */
 .cyber-avatar-wrapper {
     width: 96px !important;
     min-width: 96px !important;
@@ -1872,10 +2080,84 @@ input[type="range"] {
 }
 """
 
+HEAD_DARK_JS = """
+<script>
+    (function() {
+        document.documentElement.classList.add('dark');
+        document.documentElement.setAttribute('data-theme', 'dark');
+        if (document.body) {
+            document.body.classList.add('dark');
+        }
+        try {
+            localStorage.setItem('color-theme', 'dark');
+            localStorage.setItem('theme', 'dark');
+        } catch(e) {}
+        window.__theme = 'dark';
+
+        const obs = new MutationObserver(function() {
+            if (!document.documentElement.classList.contains('dark')) {
+                document.documentElement.classList.add('dark');
+            }
+            if (document.body && !document.body.classList.contains('dark')) {
+                document.body.classList.add('dark');
+            }
+        });
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    })();
+</script>
+"""
+
 custom_theme = gr.themes.Soft(
     primary_hue="cyan",
     secondary_hue="blue",
     neutral_hue="slate"
+).set(
+    body_background_fill="#070a12",
+    body_background_fill_dark="#070a12",
+    background_fill_primary="#070a12",
+    background_fill_primary_dark="#070a12",
+    background_fill_secondary="#0d1424",
+    background_fill_secondary_dark="#0d1424",
+    block_background_fill="#0d1424",
+    block_background_fill_dark="#0d1424",
+    block_border_color="rgba(56, 189, 248, 0.22)",
+    block_border_color_dark="rgba(56, 189, 248, 0.22)",
+    block_label_background_fill="#0d1424",
+    block_label_background_fill_dark="#0d1424",
+    block_label_text_color="#38bdf8",
+    block_label_text_color_dark="#38bdf8",
+    block_title_text_color="#f8fafc",
+    block_title_text_color_dark="#f8fafc",
+    body_text_color="#f8fafc",
+    body_text_color_dark="#f8fafc",
+    body_text_color_subdued="#94a3b8",
+    body_text_color_subdued_dark="#94a3b8",
+    input_background_fill="#090d16",
+    input_background_fill_dark="#090d16",
+    input_border_color="rgba(56, 189, 248, 0.25)",
+    input_border_color_dark="rgba(56, 189, 248, 0.25)",
+    input_placeholder_color="#64748b",
+    input_placeholder_color_dark="#64748b",
+    checkbox_background_color="#090d16",
+    checkbox_background_color_dark="#090d16",
+    checkbox_label_background_fill="#0d1424",
+    checkbox_label_background_fill_dark="#0d1424",
+    checkbox_label_text_color="#f8fafc",
+    checkbox_label_text_color_dark="#f8fafc",
+    checkbox_border_color="rgba(56, 189, 248, 0.3)",
+    checkbox_border_color_dark="rgba(56, 189, 248, 0.3)",
+    accordion_text_color="#f8fafc",
+    accordion_text_color_dark="#f8fafc",
+    table_even_background_fill="#0d1424",
+    table_even_background_fill_dark="#0d1424",
+    table_odd_background_fill="#090d16",
+    table_odd_background_fill_dark="#090d16",
+    table_text_color="#f8fafc",
+    table_text_color_dark="#f8fafc",
+    button_secondary_background_fill="#1e293b",
+    button_secondary_background_fill_dark="#1e293b",
+    button_secondary_text_color="#f8fafc",
+    button_secondary_text_color_dark="#f8fafc"
 )
 
 with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
@@ -2893,6 +3175,7 @@ def launch_app(desktop: bool = True, port: int = 7860):
             prevent_thread_lock=True,
             theme=custom_theme,
             css=CUSTOM_CSS,
+            head=HEAD_DARK_JS,
             show_error=True
         )
 
@@ -2950,7 +3233,8 @@ def launch_app(desktop: bool = True, port: int = 7860):
             server_port=port,
             inbrowser=True,
             theme=custom_theme,
-            css=CUSTOM_CSS
+            css=CUSTOM_CSS,
+            head=HEAD_DARK_JS
         )
 
 if __name__ == "__main__":
