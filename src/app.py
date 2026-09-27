@@ -610,7 +610,8 @@ def clear_single_form():
         None, "Učitajte fotografiju za automatsku detekciju lica.",
         "💾 Spremi odabrano lice u bazu", "Formular očišćen za novu osobu.",
         gr.update(value=None),
-        empty_state
+        empty_state,
+        None
     )
 
 # ---------------- MASOVNI (BATCH) UNOS ----------------
@@ -718,9 +719,17 @@ def view_person_details(selected_person_str):
     """
     return gallery, info_text, gr.update(choices=sample_choices, value=sample_choices[0] if sample_choices else None)
 
+def get_person_primary_crop(person_id):
+    if not person_id:
+        return None
+    samples = db.get_person_samples(person_id)
+    if samples and os.path.exists(samples[0]["crop_path"]):
+        return samples[0]["crop_path"]
+    return None
+
 def on_table_select(table_data, evt: gr.SelectData):
     if evt.index is None:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update()
+        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), None
         
     row_idx = evt.index[0]
     person_id = None
@@ -738,14 +747,15 @@ def on_table_select(table_data, evt: gr.SelectData):
             person_id = all_p[row_idx]["id"]
             
     if person_id is None:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update()
+        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), None
         
     p = db.get_person(person_id)
     if not p:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update()
+        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), None
         
     choice = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
     gallery, info, sample_drop = view_person_details(choice)
+    avatar_crop = get_person_primary_crop(p["id"])
     
     name_val = p["name"]
     notes_val = p["notes"] or ""
@@ -755,17 +765,18 @@ def on_table_select(table_data, evt: gr.SelectData):
     return (
         choice, gallery, info, sample_drop,
         name_val, notes_val, btn_text, status_msg,
-        gr.update(value=choice)
+        gr.update(value=choice),
+        avatar_crop
     )
 
 def on_existing_person_picked(selected_choice):
     person_id = parse_person_id(selected_choice)
     if person_id is None:
-        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update()
+        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), None
         
     p = db.get_person(person_id)
     if not p:
-        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update()
+        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), None
         
     name_val = p["name"]
     notes_val = p["notes"] or ""
@@ -773,10 +784,12 @@ def on_existing_person_picked(selected_choice):
     status_msg = f"📌 Odabrano za unos: **{p['name']}** ({p['sample_count']} slika). Odaberite lice sa slike i kliknite Spremi."
     choice_str = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
     gallery, info, sample_drop = view_person_details(choice_str)
+    avatar_crop = get_person_primary_crop(p["id"])
     
     return (
         name_val, notes_val, btn_text, status_msg,
-        gallery, info, sample_drop, gr.update(value=choice_str)
+        gallery, info, sample_drop, gr.update(value=choice_str),
+        avatar_crop
     )
 
 def on_table_search_changed(search_query):
@@ -1623,6 +1636,34 @@ body, html {
 input[type="range"] {
     accent-color: #06b6d4 !important;
 }
+
+/* Person Mini-Avatar Thumbnail */
+.cyber-person-avatar-thumb {
+    width: 66px !important;
+    height: 66px !important;
+    min-width: 66px !important;
+    min-height: 66px !important;
+    max-width: 66px !important;
+    max-height: 66px !important;
+    border-radius: 12px !important;
+    border: 2px solid #06b6d4 !important;
+    box-shadow: 0 0 12px rgba(6, 182, 212, 0.4) !important;
+    background: #0f172a !important;
+    overflow: hidden !important;
+    margin-top: 6px !important;
+}
+
+.cyber-person-avatar-thumb img {
+    object-fit: cover !important;
+    border-radius: 10px !important;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+.person-card-top-row {
+    align-items: center !important;
+    gap: 12px !important;
+}
 """
 
 custom_theme = gr.themes.Soft(
@@ -1842,21 +1883,34 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                     with gr.Tabs():
                         # Podtab 1: Pojedinačni unos i izrezivanje s grupne slike
                         with gr.TabItem("Pojedinačni unos / Označavanje lica"):
-                            # Brzi pretraživač za postojeću osobu
-                            existing_person_picker = gr.Dropdown(
-                                label="🔍 Pretraži i odaberi postojeću osobu iz baze (za dodavanje nove slike):",
-                                choices=get_person_dropdown_choices(),
-                                allow_custom_value=True,
-                                info="Počnite tipkati ime i odaberite osobu za brzi unos nove slike"
-                            )
-                            
+                            # Mini-avatar kartica odabrane osobe i brzi pretraživač
+                            with gr.Row(equal_height=True, elem_classes=["person-card-top-row"]):
+                                selected_person_avatar = gr.Image(
+                                    value=None,
+                                    type="filepath",
+                                    label="Avatar",
+                                    show_label=False,
+                                    container=False,
+                                    height=66,
+                                    width=66,
+                                    interactive=False,
+                                    elem_classes=["cyber-person-avatar-thumb"]
+                                )
+                                with gr.Column(scale=5):
+                                    existing_person_picker = gr.Dropdown(
+                                        label="🔍 Odabrana osoba u bazi (ili pretražite drugu):",
+                                        choices=get_person_dropdown_choices(),
+                                        allow_custom_value=True,
+                                        info="Kliknite na redak u tablici ili počnite tipkati ime"
+                                    )
+                                    
                             with gr.Row():
                                 single_name_input = gr.Textbox(
                                     label="Ime i prezime osobe",
                                     placeholder="Upišite novo ime ili odaberite osobu iznad",
                                     scale=3
                                 )
-                                btn_clear_form = gr.Button("🔄 Očisti", size="sm", scale=1)
+                                btn_clear_form = gr.Button("🔄 Očisti", size="sm", scale=1, elem_classes=["btn-cyber-secondary"])
                                 
                             single_notes_input = gr.Textbox(label="Bilješke (opcionalno)", placeholder="npr. Član tima, IT odjel")
                             
@@ -1891,7 +1945,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                 single_preview_crop = gr.Image(type="numpy", label="Trenutno odabrano lice", height=160, scale=1)
                                 single_preview_info = gr.Markdown("Učitajte sliku za automatsku detekciju lica.", scale=2)
                             
-                            btn_save_single = gr.Button("💾 Spremi odabrano lice u bazu", variant="primary", size="lg")
+                            btn_save_single = gr.Button("💾 Spremi odabrano lice u bazu", variant="primary", size="lg", elem_classes=["btn-cyber-primary"])
                             single_save_status = gr.Markdown("")
 
                         # Podtab 2: Masovni unos (10+ slika)
@@ -1918,7 +1972,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                 label="Odaberite više slika odjednom (Drag & Drop)",
                                 file_types=["image"]
                             )
-                            btn_batch_enroll = gr.Button("⚡ Uvezi sve fotografije u bazu", variant="primary")
+                            btn_batch_enroll = gr.Button("⚡ Uvezi sve fotografije u bazu", variant="primary", elem_classes=["btn-cyber-primary"])
                             batch_status_md = gr.Markdown("")
 
                 # Desni stupac: Pregled, pretraga i upravljanje
@@ -1932,37 +1986,45 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             placeholder="Upišite ime, ID ili bilješku za filtriranje...",
                             scale=4
                         )
-                        btn_clear_table_search = gr.Button("✖ Poništi", size="sm", scale=1)
+                        btn_clear_table_search = gr.Button("✖ Poništi", size="sm", scale=1, elem_classes=["btn-cyber-secondary"])
                         
                     db_stats_md = gr.Markdown("")
                     db_table = gr.Dataframe(
                         headers=["ID", "Ime", "Broj slika", "Kvaliteta profila", "Bilješke", "Datum registracije"],
                         label="Popis osoba (Kliknite na bilo koji redak za automatski odabir osobe za unos)",
-                        interactive=False
+                        interactive=False,
+                        max_height=300
                     )
-                    btn_refresh_db = gr.Button("🔄 Osvježi cijeli popis", size="sm")
+                    btn_refresh_db = gr.Button("🔄 Osvježi cijeli popis", size="sm", elem_classes=["btn-cyber-secondary"])
                     
-                    gr.Markdown("---")
-                    gr.Markdown("### 🖼️ Galerija lica i biometrijski profil")
-                    with gr.Row():
-                        manage_person_dropdown = gr.Dropdown(
-                            label="Odaberite osobu za pregled ili brisanje",
-                            choices=get_person_dropdown_choices(),
-                            allow_custom_value=True
+                    # Sklopiva galerija referentnih slika i profil
+                    with gr.Accordion("🖼️ Referentne slike i biometrijski profil odabrane osobe", open=True, elem_classes=["cyber-accordion"]):
+                        with gr.Row():
+                            manage_person_dropdown = gr.Dropdown(
+                                label="Odaberite osobu za pregled ili brisanje",
+                                choices=get_person_dropdown_choices(),
+                                allow_custom_value=True,
+                                scale=3
+                            )
+                            btn_delete_person = gr.Button("🗑️ Obriši osobu", variant="stop", scale=1)
+                            
+                        person_info_md = gr.Markdown("Odaberite osobu iznad ili kliknite na nju u tablici za pregled lica.")
+                        person_gallery = gr.Gallery(
+                            label="Spremljeni uzorci lica",
+                            columns=5,
+                            height=170,
+                            allow_preview=False
                         )
-                        btn_delete_person = gr.Button("🗑️ Obriši osobu", variant="stop")
-                        
-                    person_info_md = gr.Markdown("Odaberite osobu iznad ili kliknite na nju u tablici za pregled lica.")
-                    person_gallery = gr.Gallery(label="Spremljeni uzorci lica", columns=4, height="auto")
 
-                    with gr.Row():
-                        sample_delete_dropdown = gr.Dropdown(
-                            label="Odaberite sliku za brisanje",
-                            choices=[],
-                            allow_custom_value=True
-                        )
-                        btn_delete_sample = gr.Button("Obriši odabranu sliku", variant="secondary")
-                    sample_action_status = gr.Markdown("")
+                        with gr.Row():
+                            sample_delete_dropdown = gr.Dropdown(
+                                label="Odaberite sliku za brisanje",
+                                choices=[],
+                                allow_custom_value=True,
+                                scale=3
+                            )
+                            btn_delete_sample = gr.Button("Obriši odabranu sliku", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
+                        sample_action_status = gr.Markdown("")
 
         # ------------------ TAB 3: SPREMLJENI KADROVI (SNAPSHOTS) ------------------
         with gr.TabItem("📸 Spremljeni Kadrovi (Snapshots)"):
@@ -2199,7 +2261,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_annotated_preview, single_crops_gallery,
             single_face_selector, single_preview_crop, single_preview_info,
             btn_save_single, single_save_status,
-            existing_person_picker, single_enroll_state
+            existing_person_picker, single_enroll_state,
+            selected_person_avatar
         ]
     )
     
@@ -2209,7 +2272,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         inputs=[existing_person_picker],
         outputs=[
             single_name_input, single_notes_input, btn_save_single, single_save_status,
-            person_gallery, person_info_md, sample_delete_dropdown, manage_person_dropdown
+            person_gallery, person_info_md, sample_delete_dropdown, manage_person_dropdown,
+            selected_person_avatar
         ]
     )
     
@@ -2292,7 +2356,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[
             manage_person_dropdown, person_gallery, person_info_md, sample_delete_dropdown,
             single_name_input, single_notes_input, btn_save_single, single_save_status,
-            existing_person_picker
+            existing_person_picker,
+            selected_person_avatar
         ]
     )
     
