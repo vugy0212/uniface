@@ -1055,7 +1055,7 @@ def get_events_ui_data(search_query=""):
     )
     first_cam = None
     first_crop = None
-    first_info = "💡 *Kliknite na redak u tablici ili sličicu u galeriji za pregled kadra kamere i detalja.*"
+    first_info = "💡 *Kliknite na redak u tablici za pregled kadra kamere i detalja.*"
     if events:
         first_ev = events[0]
         c_p = first_ev.get("snapshot_path", "")
@@ -1072,7 +1072,7 @@ def get_events_ui_data(search_query=""):
             f"* **Prikaz slike:** {cam_desc}"
         )
         
-    return stats_md, table_rows, gallery_items, first_cam, first_crop, first_info
+    return stats_md, table_rows, first_cam, first_crop, first_info
 
 def on_events_search(search_query=""):
     return get_events_ui_data(search_query)
@@ -2135,7 +2135,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
         # ------------------ TAB 4: DNEVNIK PROLAZAKA (EVIDENCIJA) ------------------
         with gr.TabItem("📋 Dnevnik Prolazaka (Evidencija)") as tab_events:
-            ev_stats_init, ev_table_init, ev_gallery_init, ev_cam_init, ev_crop_init, ev_info_init = get_events_ui_data()
+            ev_stats_init, ev_table_init, ev_cam_init, ev_crop_init, ev_info_init = get_events_ui_data()
             events_stats_md = gr.Markdown(ev_stats_init)
             
             with gr.Row():
@@ -2157,15 +2157,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         headers=["ID", "Datum i Vrijeme", "Prepoznata Osoba", "Sličnost", "Izvor / Kamera"],
                         value=ev_table_init,
                         interactive=False,
-                        label="Zabilježeni prolasci"
-                    )
-                    gr.Markdown("### 🖼️ Galerija lica u trenutku prolaska (kliknite sličicu za prikaz)")
-                    events_gallery = gr.Gallery(
-                        value=ev_gallery_init,
-                        columns=3,
-                        height=260,
-                        allow_preview=False,
-                        label="Sličice prolazaka"
+                        label="Zabilježeni prolasci",
+                        max_height=520
                     )
                 with gr.Column(scale=2):
                     gr.Markdown("### 📷 Prikaz kadra s kamere i detalji prolaska")
@@ -2472,27 +2465,21 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     events_search_input.change(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
     )
 
     btn_refresh_events.click(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
     )
 
     btn_clear_events.click(
         fn=handle_clear_events,
-        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
     )
 
     events_table.select(
-        fn=on_event_select,
-        inputs=[events_search_input],
-        outputs=[event_camera_preview, event_crop_preview, event_details_md]
-    )
-
-    events_gallery.select(
         fn=on_event_select,
         inputs=[events_search_input],
         outputs=[event_camera_preview, event_crop_preview, event_details_md]
@@ -2506,7 +2493,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     tab_events.select(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, events_gallery, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
     )
 
     btn_refresh_sysinfo.click(
