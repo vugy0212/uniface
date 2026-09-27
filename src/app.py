@@ -3100,39 +3100,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                 events_export_file = gr.File(label="Preuzmi izvezenu CSV datoteku", visible=False, scale=2)
             events_status_md = gr.Markdown("")
 
-        # ------------------ TAB 5: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
-        with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
-            with gr.Row():
-                with gr.Column(scale=1):
-                    system_info_md = gr.Markdown(hardware.get_system_report_markdown(DATA_DIR))
-                    btn_refresh_sysinfo = gr.Button("🔄 Osvježi podatke o sustavu", size="sm")
-                    
-                    gr.Markdown("---")
-                    gr.Markdown(
-                        """
-                        ### 🎯 Sustav za maksimalnu točnost (Centroid Multi-Sample)
-                        * **Sintetizirani biometrijski profil (Centroid):** Kada za osobu unesete više slika (npr. 2, 3 ili 4 različita kuta), sustav spaja njihove 512-dimenzionalne vektore u optimalni 'središnji' model osobe.
-                        * **Hibridno bodovanje:** Usporedba uzima u obzir i najbolji kut i cjelokupni centroid, čime se eliminiraju lažni pozitivni rezultati i znatno povećava točnost na grupnim slikama s otežanim osvjetljenjem.
-                        * **Sigurnosna margina:** Prikazuje razliku u postotku između najizglednijeg kandidata i drugog najboljeg, što daje jasan uvid u pouzdanost prepoznavanja.
-                        """
-                    )
-                with gr.Column(scale=1):
-                    gr.Markdown("### 📦 Sigurnosna kopija i arhiviranje baze")
-                    gr.Markdown("Izvezite cjelokupnu bazu podataka (`database.db`), biometrijske vektore i fotografije lica u ZIP arhivu ili obnovite bazu iz postojeće arhive.")
-                    
-                    with gr.Group():
-                        gr.Markdown("#### 💾 Izvoz sigurnosne kopije (Export)")
-                        btn_export_backup = gr.Button("📦 Kreiraj i preuzmi sigurnosnu kopiju (ZIP)", variant="primary")
-                        backup_download_file = gr.File(label="Preuzmite ZIP arhivu", interactive=False)
-                        backup_export_status = gr.Markdown("")
-                        
-                    with gr.Group():
-                        gr.Markdown("#### 📥 Vraćanje sigurnosne kopije (Restore / Import)")
-                        backup_upload_file = gr.File(label="Prenesite ZIP arhivu za uvoz", file_types=[".zip"], file_count="single")
-                        btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
-                        backup_import_status = gr.Markdown("")
-
-        # ------------------ TAB 6: PAMETNI SORTER FOTOGRAFIJA ------------------
+        # ------------------ TAB 5: PAMETNI SORTER FOTOGRAFIJA ------------------
         with gr.TabItem("📸 Pametni Sorter Fotografija") as tab_photo_sorter:
             gr.Markdown(
                 """
@@ -3243,6 +3211,38 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         sorter_status_md = gr.Markdown("⏳ *Sustav je spreman. Odaberite mapu s fotografijama i pokrenite sortiranje.*")
                         sorter_stats_breakdown_md = gr.Markdown("")
                         sorter_export_csv_file = gr.File(label="📥 Preuzmi CSV izvještaj sortiranja (Excel)", visible=False)
+
+        # ------------------ TAB 6: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
+        with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    system_info_md = gr.Markdown(hardware.get_system_report_markdown(DATA_DIR))
+                    btn_refresh_sysinfo = gr.Button("🔄 Osvježi podatke o sustavu", size="sm")
+                    
+                    gr.Markdown("---")
+                    gr.Markdown(
+                        """
+                        ### 🎯 Sustav za maksimalnu točnost (Centroid Multi-Sample)
+                        * **Sintetizirani biometrijski profil (Centroid):** Kada za osobu unesete više slika (npr. 2, 3 ili 4 različita kuta), sustav spaja njihove 512-dimenzionalne vektore u optimalni 'središnji' model osobe.
+                        * **Hibridno bodovanje:** Usporedba uzima u obzir i najbolji kut i cjelokupni centroid, čime se eliminiraju lažni pozitivni rezultati i znatno povećava točnost na grupnim slikama s otežanim osvjetljenjem.
+                        * **Sigurnosna margina:** Prikazuje razliku u postotku između najizglednijeg kandidata i drugog najboljeg, što daje jasan uvid u pouzdanost prepoznavanja.
+                        """
+                    )
+                with gr.Column(scale=1):
+                    gr.Markdown("### 📦 Sigurnosna kopija i arhiviranje baze")
+                    gr.Markdown("Izvezite cjelokupnu bazu podataka (`database.db`), biometrijske vektore i fotografije lica u ZIP arhivu ili obnovite bazu iz postojeće arhive.")
+                    
+                    with gr.Group():
+                        gr.Markdown("#### 💾 Izvoz sigurnosne kopije (Export)")
+                        btn_export_backup = gr.Button("📦 Kreiraj i preuzmi sigurnosnu kopiju (ZIP)", variant="primary")
+                        backup_download_file = gr.File(label="Preuzmite ZIP arhivu", interactive=False)
+                        backup_export_status = gr.Markdown("")
+                        
+                    with gr.Group():
+                        gr.Markdown("#### 📥 Vraćanje sigurnosne kopije (Restore / Import)")
+                        backup_upload_file = gr.File(label="Prenesite ZIP arhivu za uvoz", file_types=[".zip"], file_count="single")
+                        btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
+                        backup_import_status = gr.Markdown("")
 
 
     # ------------------ EVENT HANDLERS ------------------
