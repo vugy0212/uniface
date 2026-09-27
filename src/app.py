@@ -724,7 +724,9 @@ def get_person_primary_crop(person_id):
         return None
     samples = db.get_person_samples(person_id)
     if samples and os.path.exists(samples[0]["crop_path"]):
-        return samples[0]["crop_path"]
+        img_bgr, err = imread_unicode(samples[0]["crop_path"])
+        if img_bgr is not None:
+            return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     return None
 
 def on_table_select(table_data, evt: gr.SelectData):
@@ -1654,17 +1656,31 @@ input[type="range"] {
     margin-top: 4px !important;
 }
 
-.cyber-person-avatar-thumb img {
+.cyber-person-avatar-thumb img,
+.cyber-person-avatar-thumb .image-frame img {
     object-fit: cover !important;
     border-radius: 12px !important;
     width: 100% !important;
     height: 100% !important;
+    display: block !important;
+}
+
+.cyber-person-avatar-thumb .image-container,
+.cyber-person-avatar-thumb .image-frame {
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 96px !important;
+    min-height: 96px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    margin: 0 !important;
 }
 
 /* Hide all Gradio overlay action buttons from avatar */
 .cyber-person-avatar-thumb button,
 .cyber-person-avatar-thumb .icon-button,
-.cyber-person-avatar-thumb [aria-label],
 .cyber-person-avatar-thumb .toolbar,
 .cyber-person-avatar-thumb .download-btn,
 .cyber-person-avatar-thumb .fullscreen-btn,
@@ -1902,7 +1918,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             with gr.Row(equal_height=True, elem_classes=["person-card-top-row"]):
                                 selected_person_avatar = gr.Image(
                                     value=None,
-                                    type="filepath",
+                                    type="numpy",
                                     label="Avatar",
                                     show_label=False,
                                     container=False,
