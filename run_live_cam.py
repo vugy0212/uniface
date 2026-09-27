@@ -19,6 +19,9 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=int, default=0, help="Start position in seconds for video/youtube (default: 0)")
     parser.add_argument("--log-events", action="store_true", default=False, help="Enable automatic detection event logging")
     parser.add_argument("--cooldown", type=int, default=30, help="Cooldown in seconds between re-logging same person (default: 30)")
+    parser.add_argument("--record-nvr", action="store_true", default=False, help="Enable continuous NVR MP4 segment recording")
+    parser.add_argument("--segment-min", type=int, default=5, help="Duration of each MP4 video segment in minutes (default: 5)")
+    parser.add_argument("--max-gb", type=float, default=20.0, help="Maximum disk storage quota in GB for FIFO cleanup (default: 20)")
     args = parser.parse_args()
 
     run_live_camera(
@@ -28,5 +31,9 @@ if __name__ == "__main__":
         device=args.device,
         start_sec=args.start,
         log_events=args.log_events,
-        cooldown_sec=args.cooldown
+        cooldown_sec=args.cooldown,
+        record_nvr=args.record_nvr,
+        segment_duration_sec=args.segment_min * 60,
+        max_storage_gb=args.max_gb
     )
+

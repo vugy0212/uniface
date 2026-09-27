@@ -81,6 +81,14 @@ def init_db():
                 conn.execute("ALTER TABLE detection_events ADD COLUMN snapshot_path TEXT DEFAULT '';")
             except Exception:
                 pass
+            try:
+                conn.execute("ALTER TABLE detection_events ADD COLUMN video_path TEXT DEFAULT '';")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE detection_events ADD COLUMN video_offset_sec REAL DEFAULT 0.0;")
+            except Exception:
+                pass
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_face_samples_person_id ON face_samples(person_id);
             """)
@@ -250,22 +258,23 @@ def get_cached_embeddings():
         _cached_embeddings = get_all_embeddings()
     return _cached_embeddings
 
-def log_detection_event(person_name: str, similarity: float, source_label: str, crop_path: str = "", snapshot_path: str = "") -> int:
-    """Inserts a detection event into the event log."""
+def log_detection_event(person_name: str, similarity: float, source_label: str, crop_path: str = "", snapshot_path: str = "", video_path: str = "", video_offset_sec: float = 0.0) -> int:
+    """Inserts a detection event into the event log with optional video bookmarks."""
     with get_db() as conn:
         with conn:
             cur = conn.execute(
-                "INSERT INTO detection_events (person_name, similarity, source_label, crop_path, snapshot_path) VALUES (?, ?, ?, ?, ?)",
-                (person_name.strip(), float(similarity), source_label.strip(), crop_path.strip(), snapshot_path.strip())
+                "INSERT INTO detection_events (person_name, similarity, source_label, crop_path, snapshot_path, video_path, video_offset_sec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (person_name.strip(), float(similarity), source_label.strip(), crop_path.strip(), snapshot_path.strip(), str(video_path).strip(), float(video_offset_sec))
             )
             return cur.lastrowid
 
 def get_detection_events(limit: int = 300, name_filter: str = ""):
-    """Fetches recent detection events, optionally filtered by person name."""
+    """Fetches recent detection events, optionally filtered by person name, including video bookmarks."""
     with get_db() as conn:
         if name_filter and name_filter.strip():
             query = """
                 SELECT id, person_name, similarity, source_label, crop_path, snapshot_path,
+                       video_path, video_offset_sec,
                        datetime(created_at, 'localtime') as local_time
                 FROM detection_events
                 WHERE LOWER(person_name) LIKE LOWER(?)
@@ -275,6 +284,7 @@ def get_detection_events(limit: int = 300, name_filter: str = ""):
         else:
             query = """
                 SELECT id, person_name, similarity, source_label, crop_path, snapshot_path,
+                       video_path, video_offset_sec,
                        datetime(created_at, 'localtime') as local_time
                 FROM detection_events
                 ORDER BY id DESC LIMIT ?

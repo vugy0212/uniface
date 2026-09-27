@@ -39,6 +39,9 @@ if __name__ == "__main__":
     parser.add_argument("--log-events", action="store_true", default=False, help="Enable automatic event logging into database")
     parser.add_argument("--cooldown", type=int, default=30, help="Event logging cooldown in seconds (default: 30)")
     parser.add_argument("--device", type=str, default="CPU", help="Inference device (CPU or CUDA)")
+    parser.add_argument("--record-nvr", action="store_true", default=False, help="Enable continuous NVR MP4 segment recording")
+    parser.add_argument("--segment-min", type=int, default=5, help="Duration of each MP4 video segment in minutes (default: 5)")
+    parser.add_argument("--max-gb", type=float, default=20.0, help="Maximum disk storage quota in GB for FIFO cleanup (default: 20)")
 
     args = parser.parse_args()
 
@@ -55,5 +58,9 @@ if __name__ == "__main__":
         process_interval=args.skip,
         log_events=args.log_events,
         cooldown_sec=args.cooldown,
-        device=args.device
+        device=args.device,
+        record_nvr=args.record_nvr,
+        segment_duration_sec=args.segment_min * 60,
+        max_storage_gb=args.max_gb
     )
+

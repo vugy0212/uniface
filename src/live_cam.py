@@ -29,6 +29,7 @@ import db
 import face_engine
 import config
 from image_utils import imwrite_unicode
+from nvr_recorder import get_nvr_manager
 
 DATA_DIR = os.path.join(APP_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
@@ -73,7 +74,7 @@ def draw_corner_box(img, pt1, pt2, color, thickness=2, corner_len=20):
     cv2.line(img, (x2, y2), (x2 - corner_len, y2), color, thickness)
     cv2.line(img, (x2, y2), (x2, y2 - corner_len), color, thickness)
 
-def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, status_msg="", camera_label="USB Web Kamera", cur_sec=0, total_sec=0, log_events=False):
+def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, status_msg="", camera_label="USB Web Kamera", cur_sec=0, total_sec=0, log_events=False, record_nvr=False):
     """Renders sleek top and bottom HUD panels with live telemetry and timeline."""
     h, w = frame.shape[:2]
     
@@ -107,6 +108,11 @@ def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, stat
     cv2.putText(frame, f"Brzina: {status_indicator}", (stats_x, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, fps_color, 1, cv2.LINE_AA)
     cv2.putText(frame, f"Lica u kadru: {num_faces}", (stats_x, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (226, 232, 240), 1, cv2.LINE_AA)
     
+    # NVR REC Badge
+    if record_nvr:
+        cv2.circle(frame, (stats_x - 30, 24), 6, (0, 0, 235), -1)
+        cv2.putText(frame, "REC", (stats_x - 18, 28), cv2.FONT_HERSHEY_DUPLEX, 0.48, (0, 0, 255), 1, cv2.LINE_AA)
+
     cv2.putText(frame, f"Prag: {threshold:.2f}", (stats_x + 180, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (245, 158, 11), 1, cv2.LINE_AA)
     cv2.putText(frame, f"Baza: {total_persons} osoba", (stats_x + 180, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (203, 213, 225), 1, cv2.LINE_AA)
 
@@ -134,9 +140,9 @@ def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, stat
         cv2.putText(frame, status_msg, (15, h - 12), cv2.FONT_HERSHEY_DUPLEX, 0.55, (34, 197, 94), 1, cv2.LINE_AA)
     else:
         if total_sec > 0:
-            controls_txt = "[Q] Izlaz   [SPACE] Pauza   [A/D] Premotaj   [E] Evidencija ON/OFF   [S] Kadar   [O] Mapa"
+            controls_txt = "[Q] Izlaz   [SPACE] Pauza   [R] NVR Snimanje   [A/D] Premotaj   [E] Evidencija   [S] Kadar"
         else:
-            controls_txt = "[Q/ESC] Izlaz   [E] Evidencija ON/OFF   [S] Spremi kadar   [O] Mapa   [SPACE] Pauza"
+            controls_txt = "[Q/ESC] Izlaz   [R] NVR Snimanje   [E] Evidencija ON/OFF   [S] Spremi kadar   [O] Mapa   [SPACE] Pauza"
         cv2.putText(frame, controls_txt, (15, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (148, 163, 184), 1, cv2.LINE_AA)
 
 def resolve_stream_source(source_input):
@@ -220,16 +226,18 @@ def resolve_stream_source(source_input):
         cam_idx = 0
     return cam_idx, f"USB Web Kamera (indeks {cam_idx})", "usb"
 
-def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="CPU", start_sec=0, log_events=False, cooldown_sec=30):
+def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="CPU", start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_duration_sec=300, max_storage_gb=20.0):
     """
     Main loop for live face recognition from webcam, IP/RTSP camera, YouTube, or video file.
     """
     source_str = str(camera_source).strip()
-    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}")
+    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}, record_nvr={record_nvr}")
     print("===================================================")
     print("      UniFace Live Camera - Prepoznavanje Lica")
     if log_events:
         print(f"      [📋 Evidencija prolazaka: AKTIVNA | Cooldown: {cooldown_sec}s]")
+    if record_nvr:
+        print(f"      [🔴 NVR Snimanje: AKTIVNO | Segment: {segment_duration_sec}s]")
     print("===================================================")
 
     stream_target, source_label, source_kind = resolve_stream_source(source_str)
@@ -342,6 +350,13 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
     possible_threshold_delta = 0.08
     
     last_seen_times = {} # person_name -> epoch timestamp for cooldown filter
+
+    # NVR Manager initialization
+    nvr = get_nvr_manager()
+    nvr.max_storage_gb = max_storage_gb
+    cam_nvr_id = 1
+    if record_nvr:
+        nvr.configure_channel(cam_nvr_id, source_label, segment_duration_sec=segment_duration_sec, fps=20.0)
     
     def record_event_if_eligible(person_name, similarity, crop_bgr, full_frame=None):
         nonlocal status_notification, status_notification_time
@@ -376,18 +391,23 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
             elif crop_saved_path:
                 snap_saved_path = crop_saved_path
 
+            vid_path, vid_offset = nvr.get_bookmark(cam_nvr_id) if record_nvr else ("", 0.0)
+
             try:
                 db.log_detection_event(
                     person_name=person_name,
                     similarity=similarity,
                     source_label=source_label,
                     crop_path=crop_saved_path,
-                    snapshot_path=snap_saved_path
+                    snapshot_path=snap_saved_path,
+                    video_path=vid_path,
+                    video_offset_sec=vid_offset
                 )
                 sim_pct = similarity * 100
+                bmark_str = f" [Video: {os.path.basename(vid_path)} @ {vid_offset:.1f}s]" if vid_path else ""
                 status_notification = f"📋 Evidentiran prolazak: {person_name} ({sim_pct:.1f}%)"
                 status_notification_time = time.time()
-                print(f"[EVIDENCIJA] Zabilježen prolazak: {person_name} ({sim_pct:.1f}%) [{source_label}] (Slika kamere spremljena)")
+                print(f"[EVIDENCIJA] Zabilježen prolazak: {person_name} ({sim_pct:.1f}%) [{source_label}]{bmark_str}")
             except Exception as log_err:
                 print(f"[UPOZORENJE] Greška evidentiranja u dnevnik: {log_err}")
 
@@ -586,8 +606,13 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                 camera_label=source_label,
                 cur_sec=cur_sec,
                 total_sec=total_seconds,
-                log_events=log_events
+                log_events=log_events,
+                record_nvr=record_nvr
             )
+
+            # Write frame to NVR if active
+            if record_nvr and not paused and display_frame is not None:
+                nvr.write_frame(cam_nvr_id, display_frame)
             
             cv2.imshow(window_name, display_frame)
 
@@ -629,6 +654,23 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                 else:
                     status_notification = "▶️ Nastavak snimanja uzivo."
                 status_notification_time = time.time()
+            elif key in (ord('r'), ord('R')): # R -> NVR Record toggle
+                record_nvr = not record_nvr
+                if record_nvr:
+                    nvr.configure_channel(cam_nvr_id, source_label, segment_duration_sec=segment_duration_sec, fps=20.0)
+                    status_notification = "🔴 NVR Snimanje: AKTIVNO"
+                else:
+                    nvr.stop_all()
+                    status_notification = "NVR Snimanje: ISKLJUCENO"
+                status_notification_time = time.time()
+            elif key in (ord('u'), ord('U')): # U -> Refresh DB cache
+                db.invalidate_cache()
+                face_idx = face_engine.get_face_index()
+                stats = db.get_stats()
+                total_persons = stats["total_persons"]
+                status_notification = f"Baza osvjezena! Osoba: {total_persons}"
+                status_notification_time = time.time()
+                print(f"[OK] {status_notification}")
             elif key in (ord('e'), ord('E')): # E -> Toggle Event Logging
                 log_events = not log_events
                 if log_events:
@@ -672,14 +714,6 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                 threshold = max(0.20, round(threshold - 0.02, 2))
                 status_notification = f"Prag smanjen na: {threshold:.2f} (blaze)"
                 status_notification_time = time.time()
-            elif key in (ord('r'), ord('R')): # Refresh DB cache
-                db.invalidate_cache()
-                face_idx = face_engine.get_face_index()
-                stats = db.get_stats()
-                total_persons = stats["total_persons"]
-                status_notification = f"Baza osvjezena! Osoba: {total_persons}"
-                status_notification_time = time.time()
-                print(f"[OK] {status_notification}")
                 
     except Exception as e:
         import traceback
@@ -690,6 +724,10 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
         time.sleep(3)
     finally:
         log_debug(f"Gasim kameru i zatvaram prozor (ukupno kadrova: {frame_count}).")
+        try:
+            nvr.stop_all()
+        except Exception:
+            pass
         cap.release()
         cv2.destroyAllWindows()
         print("Kamera uspjesno oslobodena i ugasena.")
@@ -705,6 +743,9 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=int, default=0, help="Start position in seconds for video/youtube (default: 0)")
     parser.add_argument("--log-events", action="store_true", default=False, help="Enable automatic detection event logging")
     parser.add_argument("--cooldown", type=int, default=30, help="Cooldown in seconds between re-logging same person (default: 30)")
+    parser.add_argument("--record-nvr", action="store_true", default=False, help="Enable continuous NVR MP4 segment recording")
+    parser.add_argument("--segment-min", type=int, default=5, help="Duration of each MP4 video segment in minutes (default: 5)")
+    parser.add_argument("--max-gb", type=float, default=20.0, help="Maximum disk storage quota in GB for FIFO cleanup (default: 20)")
     args = parser.parse_args()
     
     src = args.camera if args.camera is not None else args.source
@@ -716,5 +757,8 @@ if __name__ == "__main__":
         device=args.device,
         start_sec=args.start,
         log_events=args.log_events,
-        cooldown_sec=args.cooldown
+        cooldown_sec=args.cooldown,
+        record_nvr=args.record_nvr,
+        segment_duration_sec=args.segment_min * 60,
+        max_storage_gb=args.max_gb
     )

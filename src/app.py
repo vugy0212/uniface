@@ -872,7 +872,7 @@ def handle_import_backup(file_obj):
 def handle_refresh_sysinfo():
     return hardware.get_system_report_markdown(DATA_DIR)
 
-def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", youtube_url="", video_file=None, start_sec=0, log_events=False, cooldown_sec=30):
+def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", youtube_url="", video_file=None, start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_min=5):
     live_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_cam.py")
     if not os.path.exists(live_script):
         return "⚠️ Skripta `live_cam.py` nije pronađena."
@@ -929,9 +929,13 @@ def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", y
             cmd.extend(["--log-events", "--cooldown", str(int(cooldown_sec))])
             target_name += f" [📋 Dnevnik: {int(cooldown_sec)}s]"
 
+        if record_nvr:
+            cmd.extend(["--record-nvr", "--segment-min", str(int(segment_min))])
+            target_name += f" [🔴 NVR: {int(segment_min)}m]"
+
         subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
         
-        return f"🎥 **Live prepoznavanje [{target_name}] je uspješno pokrenuto u novom prozoru!**\n*(Pritisnite tipku `S` za spremanje kadra u mapu, `O` za otvaranje mape, klizač ili `A`/`D`/`J`/`L` za premotavanje videa, `Q` za izlaz)*"
+        return f"🎥 **Live prepoznavanje [{target_name}] je uspješno pokrenuto u novom prozoru!**\n*(Pritisnite tipku `R` za NVR snimanje, `S` za spremanje kadra u mapu, `O` za otvaranje mape, `Q` za izlaz)*"
     except Exception as e:
         return f"❌ Greška pri pokretanju: {e}"
 
@@ -942,7 +946,9 @@ def handle_launch_multicam(
     c4_on, c4_name, c4_src,
     threshold=0.45,
     log_events=False,
-    cooldown_sec=30
+    cooldown_sec=30,
+    record_nvr=False,
+    segment_min=5
 ):
     try:
         import subprocess
@@ -994,6 +1000,9 @@ def handle_launch_multicam(
         if log_events:
             cmd.extend(["--log-events", "--cooldown", str(int(cooldown_sec))])
 
+        if record_nvr:
+            cmd.extend(["--record-nvr", "--segment-min", str(int(segment_min))])
+
         active_count = sum([
             bool(c1_on and str(c1_src).strip()),
             bool(c2_on and str(c2_src).strip()),
@@ -1004,7 +1013,8 @@ def handle_launch_multicam(
             return "⚠️ Morate omogućiti barem jednu kameru za 2×2 mrežu."
 
         subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
-        return f"🎛️ **Multi-Camera 2×2 mreža ({active_count} kamere) je uspješno pokrenuta u novom prozoru!**\n*(Pritisnite tipke `1`-`4` za Solo prikaz pojedine kamere, `0` ili `ESC` za povratak u 2×2 grid, `S` za snimanje kadra, `E` za evidenciju, `Q` za izlaz)*"
+        nvr_tag = f" uz 24/7 NVR snimanje ({int(segment_min)}m segmenti)" if record_nvr else ""
+        return f"🎛️ **Multi-Camera 2×2 mreža ({active_count} kamere) je uspješno pokrenuta u novom prozoru{nvr_tag}!**\n*(Pritisnite tipke `1`-`4` za Solo prikaz, `0` ili `ESC` za mrežu, `R` za NVR snimanje, `E` za evidenciju, `S` za kadar, `Q` za izlaz)*"
     except Exception as e:
         return f"❌ Greška pri pokretanju 2×2 mreže: {e}"
 
@@ -1103,7 +1113,6 @@ def get_events_ui_data(search_query=""):
     stats = db.get_detection_stats()
     
     table_rows = []
-    gallery_items = []
     
     for ev in events:
         sim_pct = f"{ev['similarity']*100:.1f}%"
@@ -1114,12 +1123,6 @@ def get_events_ui_data(search_query=""):
             sim_pct,
             ev["source_label"]
         ])
-        snap_p = ev.get("snapshot_path", "")
-        crop_p = ev.get("crop_path", "")
-        thumb = crop_p if (crop_p and os.path.exists(crop_p)) else (snap_p if (snap_p and os.path.exists(snap_p)) else None)
-        if thumb and os.path.exists(thumb):
-            caption = f"{ev['person_name']} ({sim_pct}) - {ev['local_time']}"
-            gallery_items.append((thumb, caption))
             
     stats_md = (
         f"📊 **Ukupno prolazaka:** `{stats['total_events']}` &nbsp;|&nbsp; "
@@ -1129,6 +1132,7 @@ def get_events_ui_data(search_query=""):
     first_cam = None
     first_crop = None
     first_info = "💡 *Kliknite na redak u tablici za pregled kadra kamere i detalja.*"
+    first_video = None
     if events:
         first_ev = events[0]
         c_p = first_ev.get("snapshot_path", "")
@@ -1136,6 +1140,14 @@ def get_events_ui_data(search_query=""):
         first_cam = c_p if (c_p and os.path.exists(c_p)) else (cr_p if (cr_p and os.path.exists(cr_p)) else None)
         first_crop = cr_p if (cr_p and os.path.exists(cr_p)) else None
         cam_desc = "Kadar s kamere (nadzor)" if (c_p and os.path.exists(c_p)) else "Izrezano lice"
+        
+        v_p = first_ev.get("video_path", "")
+        v_off = first_ev.get("video_offset_sec", 0.0)
+        v_tag = ""
+        if v_p and os.path.exists(v_p):
+            first_video = v_p
+            v_tag = f"\n* **📹 NVR Video snimka:** `{os.path.basename(v_p)}` (Detekcija na: **`{v_off:.1f}s`**)"
+
         first_info = (
             f"### 📋 Detalji odabranog prolaska\n"
             f"* **Prepoznata osoba:** **`{first_ev['person_name']}`**\n"
@@ -1143,9 +1155,10 @@ def get_events_ui_data(search_query=""):
             f"* **Pouzdanost / Sličnost:** **`{first_ev['similarity']*100:.1f}%`**\n"
             f"* **Izvor / Kamera:** `{first_ev['source_label']}`\n"
             f"* **Prikaz slike:** {cam_desc}"
+            f"{v_tag}"
         )
         
-    return stats_md, table_rows, first_cam, first_crop, first_info
+    return stats_md, table_rows, first_cam, first_crop, first_info, gr.update(value=first_video, visible=bool(first_video))
 
 def on_events_search(search_query=""):
     return get_events_ui_data(search_query)
@@ -1161,6 +1174,14 @@ def on_event_select(evt: gr.SelectData, search_query=""):
         crop_img = crop_p if (crop_p and os.path.exists(crop_p)) else None
         sim_pct = f"{ev['similarity']*100:.1f}%"
         cam_desc = "✅ Puni kadar kamere" if (cam_p and os.path.exists(cam_p)) else "ℹ️ Prikaz izrezanog lica"
+        
+        v_p = ev.get("video_path", "")
+        v_off = ev.get("video_offset_sec", 0.0)
+        v_tag = ""
+        has_video = bool(v_p and os.path.exists(v_p))
+        if has_video:
+            v_tag = f"\n* **📹 NVR Video snimka:** `{os.path.basename(v_p)}` (Detekcija na: **`{v_off:.1f}s`**)"
+
         info = (
             f"### 📋 Detalji prolaska #{ev['id']}\n"
             f"* **Prepoznata osoba:** **`{ev['person_name']}`**\n"
@@ -1168,13 +1189,52 @@ def on_event_select(evt: gr.SelectData, search_query=""):
             f"* **Pouzdanost / Sličnost:** **`{sim_pct}`**\n"
             f"* **Izvor / Kamera:** `{ev['source_label']}`\n"
             f"* **Prikaz slike:** {cam_desc}"
+            f"{v_tag}"
         )
-        return main_img, crop_img, info
-    return None, None, "Događaj nije pronađen."
+        return main_img, crop_img, info, gr.update(value=v_p if has_video else None, visible=has_video)
+    return None, None, "Događaj nije pronađen.", gr.update(value=None, visible=False)
 
 def handle_clear_events():
     db.clear_detection_events()
     return get_events_ui_data("")
+
+# ---------------- NVR ARCHIVE HELPERS ----------------
+def get_nvr_archive_ui_data(date_filter=""):
+    from nvr_recorder import get_nvr_manager
+    nvr = get_nvr_manager()
+    recs = nvr.list_recordings(date_filter)
+    rows = []
+    total_mb = 0.0
+    for r in recs:
+        total_mb += r["size_mb"]
+        rows.append([
+            r["filename"],
+            r["camera"],
+            r["day"],
+            r["time_str"],
+            f"{r['size_mb']:.1f} MB",
+            r["path"]
+        ])
+    total_gb = total_mb / 1024.0
+    status_md = (
+        f"💾 **Zauzeće video arhive:** `{total_gb:.2f} GB` / `{nvr.max_storage_gb:.1f} GB` (FIFO rotacija) &nbsp;|&nbsp; "
+        f"📼 **Ukupno video segmenata:** `{len(recs)}` &nbsp;|&nbsp; "
+        f"📁 **Putanja:** `{nvr.recordings_dir}`"
+    )
+    first_video = recs[0]["path"] if recs else None
+    first_label = f"▶️ **Odabrana snimka:** `{recs[0]['filename']}`" if recs else "💡 *Nema zabilježenih snimki.*"
+    return status_md, rows, first_video, first_label
+
+def on_nvr_segment_select(evt: gr.SelectData, date_filter=""):
+    from nvr_recorder import get_nvr_manager
+    nvr = get_nvr_manager()
+    recs = nvr.list_recordings(date_filter)
+    row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+    if 0 <= row_idx < len(recs):
+        item = recs[row_idx]
+        info_txt = f"▶️ **Odabrana snimka:** `{item['filename']}` ({item['camera']} | {item['time_str']} | {item['size_mb']} MB)"
+        return item["path"], info_txt
+    return None, ""
 
 def handle_export_events_csv():
     events = db.get_detection_events(limit=5000)
@@ -1952,6 +2012,23 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             visible=False,
                             scale=2
                         )
+                    with gr.Row():
+                        cam_enable_nvr = gr.Checkbox(
+                            value=False,
+                            label="🔴 24/7 NVR Video Snimanje (MP4)",
+                            info="Kontinuirano snima video segmente uz automatsko brisanje starih snimki",
+                            scale=2
+                        )
+                        cam_nvr_segment_min = gr.Slider(
+                            minimum=1,
+                            maximum=60,
+                            value=5,
+                            step=1,
+                            label="⏱️ Trajanje segmenta (minute)",
+                            info="Automatska rotacija video datoteka (1 - 60 min)",
+                            visible=False,
+                            scale=2
+                        )
 
                     with gr.Row():
                         btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
@@ -2238,7 +2315,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
         # ------------------ TAB 4: DNEVNIK PROLAZAKA (EVIDENCIJA) ------------------
         with gr.TabItem("📋 Dnevnik Prolazaka (Evidencija)") as tab_events:
-            ev_stats_init, ev_table_init, ev_cam_init, ev_crop_init, ev_info_init = get_events_ui_data()
+            ev_stats_init, ev_table_init, ev_cam_init, ev_crop_init, ev_info_init, ev_video_init = get_events_ui_data()
             events_stats_md = gr.Markdown(ev_stats_init)
             
             with gr.Row():
@@ -2279,11 +2356,39 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             height=140
                         )
                         event_details_md = gr.Markdown(ev_info_init)
+                    event_video_player = gr.Video(
+                        value=ev_video_init.get("value"),
+                        visible=ev_video_init.get("visible", False),
+                        label="📹 NVR Video Snimka (Trenutak detekcije)",
+                        interactive=False
+                    )
             
             with gr.Row():
                 btn_export_events_csv = gr.Button("📥 Izvezi cijeli dnevnik u CSV (Excel)", variant="primary", scale=1)
                 events_export_file = gr.File(label="Preuzmi izvezenu CSV datoteku", visible=False, scale=2)
             events_status_md = gr.Markdown("")
+
+            with gr.Accordion("📹 NVR Video Arhiva (Svi snimljeni video segmenti)", open=False):
+                nvr_stat_init, nvr_table_init, nvr_vid_init, nvr_lbl_init = get_nvr_archive_ui_data()
+                nvr_storage_status_md = gr.Markdown(nvr_stat_init)
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        nvr_archive_table = gr.Dataframe(
+                            headers=["Datoteka", "Kamera", "Datum", "Vrijeme", "Veličina", "Putanja"],
+                            value=nvr_table_init,
+                            interactive=False,
+                            label="Popis snimljenih video segmenata",
+                            max_height=380
+                        )
+                        with gr.Row():
+                            btn_refresh_nvr_archive = gr.Button("🔄 Osvježi video arhivu", variant="secondary")
+                    with gr.Column(scale=2):
+                        nvr_selected_info_md = gr.Markdown(nvr_lbl_init)
+                        nvr_video_preview = gr.Video(
+                            value=nvr_vid_init,
+                            label="▶️ Reprodukcija odabranog video segmenta",
+                            interactive=False
+                        )
 
         # ------------------ TAB 5: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
         with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
@@ -2470,9 +2575,15 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[cam_cooldown_sec]
     )
 
+    cam_enable_nvr.change(
+        fn=lambda v: gr.update(visible=v),
+        inputs=[cam_enable_nvr],
+        outputs=[cam_nvr_segment_min]
+    )
+
     btn_launch_live.click(
         fn=handle_launch_live,
-        inputs=[cam_source_type, cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec, cam_enable_log, cam_cooldown_sec],
+        inputs=[cam_source_type, cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec, cam_enable_log, cam_cooldown_sec, cam_enable_nvr, cam_nvr_segment_min],
         outputs=[rec_status_md]
     )
 
@@ -2485,7 +2596,9 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             mc_c4_on, mc_c4_name, mc_c4_src,
             threshold_slider,
             cam_enable_log,
-            cam_cooldown_sec
+            cam_cooldown_sec,
+            cam_enable_nvr,
+            cam_nvr_segment_min
         ],
         outputs=[rec_status_md]
     )
@@ -2597,24 +2710,24 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     events_search_input.change(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
     )
 
     btn_refresh_events.click(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
     )
 
     btn_clear_events.click(
         fn=handle_clear_events,
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
     )
 
     events_table.select(
         fn=on_event_select,
         inputs=[events_search_input],
-        outputs=[event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[event_camera_preview, event_crop_preview, event_details_md, event_video_player]
     )
 
     btn_export_events_csv.click(
@@ -2625,7 +2738,18 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     tab_events.select(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md]
+        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
+    )
+
+    # 10. NVR Video Archive wiring
+    nvr_archive_table.select(
+        fn=on_nvr_segment_select,
+        outputs=[nvr_video_preview, nvr_selected_info_md]
+    )
+
+    btn_refresh_nvr_archive.click(
+        fn=get_nvr_archive_ui_data,
+        outputs=[nvr_storage_status_md, nvr_archive_table, nvr_video_preview, nvr_selected_info_md]
     )
 
     btn_refresh_sysinfo.click(

@@ -182,7 +182,9 @@ def draw_cam_cell_hud(cell_img, cam_id: int, label: str, is_connected: bool, num
         cv2.putText(cell_img, face_txt, (fx1 + 6, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (16, 185, 129), 1, cv2.LINE_AA)
 
 
-def draw_grid_master_hud(master_frame, fps, active_count, total_count, solo_cam=0, log_events=False, status_msg=""):
+from nvr_recorder import get_nvr_manager
+
+def draw_grid_master_hud(master_frame, fps, active_count, total_count, solo_cam=0, log_events=False, record_nvr=False, status_msg=""):
     """Draws top and bottom master bars for the entire 2x2 multi-cam window."""
     h, w = master_frame.shape[:2]
     
@@ -198,10 +200,17 @@ def draw_grid_master_hud(master_frame, fps, active_count, total_count, solo_cam=
     # Title & Telemetry
     cv2.putText(master_frame, "UniFace Multi-Cam 2x2 Grid", (14, 28), cv2.FONT_HERSHEY_DUPLEX, 0.68, (255, 255, 255), 1, cv2.LINE_AA)
     
-    ev_txt = "● EVIDENCIJA AKTIVNA" if log_events else "EVIDENCIJA: ISKLJUCENA (Tipka 'E')"
+    ev_txt = "● EVIDENCIJA" if log_events else "EVIDENCIJA: OFF"
     ev_color = (129, 185, 16) if log_events else (148, 163, 184)
-    cv2.putText(master_frame, ev_txt, (340, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, ev_color, 1, cv2.LINE_AA)
+    cv2.putText(master_frame, ev_txt, (340, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.46, ev_color, 1, cv2.LINE_AA)
     
+    # NVR Recording indicator
+    if record_nvr:
+        cv2.circle(master_frame, (490, 24), 6, (0, 0, 235), -1)
+        cv2.putText(master_frame, "REC [NVR]", (502, 28), cv2.FONT_HERSHEY_DUPLEX, 0.50, (0, 0, 255), 1, cv2.LINE_AA)
+    else:
+        cv2.putText(master_frame, "NVR: OFF (Tipka 'R')", (490, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (100, 116, 139), 1, cv2.LINE_AA)
+
     # Right stats
     stats_txt = f"{fps:.1f} FPS  |  Aktivno: {active_count}/{total_count} kamera"
     (stw, _), _ = cv2.getTextSize(stats_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
@@ -219,8 +228,8 @@ def draw_grid_master_hud(master_frame, fps, active_count, total_count, solo_cam=
     if status_msg:
         cv2.putText(master_frame, status_msg, (14, h - 10), cv2.FONT_HERSHEY_DUPLEX, 0.52, (34, 197, 94), 1, cv2.LINE_AA)
     else:
-        controls = "[1-4] Povecaj kameru (Solo)  |  [0/ESC] Prikazi 2x2 mrezu  |  [S] Spremi kadar  |  [E] Evidencija  |  [Q] Izlaz"
-        cv2.putText(master_frame, controls, (14, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (148, 163, 184), 1, cv2.LINE_AA)
+        controls = "[1-4] Solo  |  [0/ESC] Mreza  |  [R] NVR Snimanje  |  [E] Evidencija  |  [S] Snimi kadar  |  [Q] Izlaz"
+        cv2.putText(master_frame, controls, (14, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (148, 163, 184), 1, cv2.LINE_AA)
 
 
 def run_multicam_grid(
@@ -229,21 +238,17 @@ def run_multicam_grid(
     process_interval: int = 3,
     log_events: bool = False,
     cooldown_sec: int = 30,
-    device: str = "CPU"
+    device: str = "CPU",
+    record_nvr: bool = False,
+    segment_duration_sec: int = 300,
+    max_storage_gb: float = 20.0
 ):
     """
-    Main loop for Multi-Camera 2x2 Grid with real-time biometric face recognition.
-    
-    camera_configs: list of dicts:
-        [
-            {"id": 1, "source": "0", "label": "Kamera 1: USB Web", "enabled": True},
-            {"id": 2, "source": "rtsp://...", "label": "Kamera 2: Denver IP", "enabled": True},
-            ...
-        ]
+    Main loop for Multi-Camera 2x2 Grid with real-time biometric face recognition and NVR recording.
     """
     print("=========================================================")
     print("      UniFace Multi-Camera 2x2 Grid - Nadzor Uživo")
-    print(f"      [Prag: {threshold} | Interval: {process_interval} | Dnevnik: {log_events}]")
+    print(f"      [Prag: {threshold} | Interval: {process_interval} | Dnevnik: {log_events} | NVR: {record_nvr}]")
     print("=========================================================")
     
     # 1. Initialize Face Index
@@ -287,6 +292,14 @@ def run_multicam_grid(
     t_prev = time.perf_counter()
     fps = 0.0
 
+    # NVR Manager
+    nvr = get_nvr_manager()
+    nvr.max_storage_gb = max_storage_gb
+    if record_nvr:
+        for w in workers:
+            nvr.configure_channel(w.cam_id, w.label, segment_duration_sec=segment_duration_sec, fps=20.0)
+        print(f"[NVR] Pokrenuto 24/7 NVR snimanje za {len(workers)} kanala (segment: {segment_duration_sec}s).")
+
     # Store tracked detections per camera: { cam_id: [ {"bbox": ..., "label": ..., "color": ..., "crop": ...} ] }
     cam_tracked_faces = {w.cam_id: [] for w in workers}
 
@@ -321,15 +334,20 @@ def run_multicam_grid(
             elif crop_path:
                 snap_path = crop_path
 
+            vid_path, vid_offset = nvr.get_bookmark(cam_id) if record_nvr else ("", 0.0)
+
             try:
                 db.log_detection_event(
                     person_name=person_name,
                     similarity=similarity,
                     source_label=cam_label,
                     crop_path=crop_path,
-                    snapshot_path=snap_path
+                    snapshot_path=snap_path,
+                    video_path=vid_path,
+                    video_offset_sec=vid_offset
                 )
-                print(f"[EVIDENCIJA] Cam #{cam_id} ({cam_label}): Zabilježen {person_name} ({similarity*100:.1f}%)")
+                bmark_str = f" [Video bookmark: {os.path.basename(vid_path)} @ {vid_offset:.1f}s]" if vid_path else ""
+                print(f"[EVIDENCIJA] Cam #{cam_id} ({cam_label}): Zabilježen {person_name} ({similarity*100:.1f}%){bmark_str}")
             except Exception as err:
                 print(f"[UPOZORENJE] Greška pri spremanju u dnevnik: {err}")
 
@@ -409,6 +427,11 @@ def run_multicam_grid(
 
                 # Draw cell-level HUD (label, dot, faces count)
                 draw_cam_cell_hud(cell_img, w.cam_id, w.label, conn, len(current_faces), is_solo=(solo_cam_id == w.cam_id))
+                
+                # Write to NVR recording if enabled
+                if record_nvr and conn and cell_img is not None:
+                    nvr.write_frame(w.cam_id, cell_img)
+
                 processed_cells.append((w.cam_id, cell_img))
 
             # ---------------- COMPOSITING THE CANVAS ----------------
@@ -452,6 +475,7 @@ def run_multicam_grid(
                 total_count=len(workers),
                 solo_cam=solo_cam_id,
                 log_events=log_events,
+                record_nvr=record_nvr,
                 status_msg=status_notification
             )
 
@@ -474,6 +498,16 @@ def run_multicam_grid(
                 solo_cam_id = 4 if (solo_cam_id != 4 and len(workers) >= 4) else 0
             elif key == ord('0'):
                 solo_cam_id = 0 # Return to 2x2 grid
+            elif key in (ord('r'), ord('R')):
+                record_nvr = not record_nvr
+                if record_nvr:
+                    for w in workers:
+                        nvr.configure_channel(w.cam_id, w.label, segment_duration_sec=segment_duration_sec, fps=20.0)
+                    status_notification = "🔴 NVR Snimanje: AKTIVNO"
+                else:
+                    nvr.stop_all()
+                    status_notification = "NVR Snimanje: ISKLJUCENO"
+                status_notification_time = time.time()
             elif key in (ord('e'), ord('E')):
                 log_events = not log_events
                 status_notification = "📋 Evidencija prolazaka: AKTIVNA" if log_events else "Evidencija: ISKLJUCENA"
@@ -490,7 +524,11 @@ def run_multicam_grid(
                 print(f"[SNAPSHOT] Snimljen kadar: {snap_path}")
 
     finally:
-        print("[INFO] Zaustavljam sve radne dretve kamera...")
+        print("[INFO] Zaustavljam NVR snimanje i radne dretve...")
+        try:
+            nvr.stop_all()
+        except Exception:
+            pass
         for w in workers:
             w.stop()
         cv2.destroyAllWindows()
