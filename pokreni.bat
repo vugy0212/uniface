@@ -19,11 +19,11 @@ if exist "python\python.exe" (
     set "PY_CMD=python"
 )
 
-echo Pokrecem graficko sucelje na http://127.0.0.1:7860
-echo Web preglednik ce se automatski otvoriti.
+echo Pokrecem UniFace Studio u samostalnom radnom prozoru...
+echo (Za pokretanje u obicnom web pregledniku pokrenite: pokreni.bat --browser)
 echo.
 
-"%PY_CMD%" "src\app.py"
+"%PY_CMD%" "run_studio.py" %*
 
 if errorlevel 1 (
     echo.

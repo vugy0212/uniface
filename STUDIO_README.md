@@ -18,10 +18,13 @@ Dovoljno je pokrenuti:
 # 1. Instalacija ovisnosti za Studio
 pip install -r requirements_studio.txt
 
-# 2. Pokretanje aplikacije
+# 2. Pokretanje aplikacije (automatski se otvara u samostalnom radnom prozoru)
 python run_studio.py
+
+# Ako želite prisiliti otvaranje u običnom web pregledniku:
+python run_studio.py --browser
 ```
-Aplikacija se automatski otvara u web pregledniku na adresi:  
+Aplikacija se otvara kao samostalna **desktop aplikacija** (nativni prozor bez adresne trake i tabova preglednika). U pozadini se servis vrti na:  
 👉 **`http://127.0.0.1:7860`**
 
 ---

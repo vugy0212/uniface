@@ -2858,5 +2858,101 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[manage_person_dropdown, existing_person_picker]
     )
 
+def launch_app(desktop: bool = True, port: int = 7860):
+    """
+    Pokreće UniFace Studio.
+    - Ako je desktop=True i pywebview je dostupan: pokreće samostalni nativni prozor (WebView2)
+      s čistim automatskim gašenjem svih servisa na zatvaranje prozora ('X').
+    - Ako pywebview nije instaliran ili je proslijeđen argument --browser / --web:
+      pokreće aplikaciju u zadanom web pregledniku.
+    """
+    import time
+    import urllib.request
+
+    if "--browser" in sys.argv or "--web" in sys.argv:
+        desktop = False
+
+    has_webview = False
+    if desktop:
+        try:
+            import webview
+            has_webview = True
+        except ImportError:
+            has_webview = False
+
+    if has_webview:
+        print("===================================================")
+        print("      UniFace Studio - Samostalni Radni Prozor      ")
+        print("===================================================")
+        print("Pokrećem pozadinski servis...")
+
+        demo.launch(
+            server_name="127.0.0.1",
+            server_port=port,
+            inbrowser=False,
+            prevent_thread_lock=True,
+            theme=custom_theme,
+            css=CUSTOM_CSS,
+            show_error=True
+        )
+
+        url = getattr(demo, "local_url", None) or f"http://127.0.0.1:{port}"
+        print(f"Lokalni poslužitelj spreman na: {url}")
+
+        # Provjeri je li web server spreman za primanje zahtjeva
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(url, timeout=1) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                time.sleep(0.1)
+
+        # Pronađi ikonu aplikacije
+        icon_path = None
+        for candidate in [
+            os.path.join(APP_DIR, "uniface.ico"),
+            os.path.join(APP_DIR, "repo", "uniface.ico"),
+            os.path.join(APP_DIR, "assets", "uniface.ico"),
+        ]:
+            if os.path.exists(candidate):
+                icon_path = candidate
+                break
+
+        # Otvori samostalni desktop prozor
+        window = webview.create_window(
+            title="UniFace Studio - Sustav za biometrijsku identifikaciju i NVR nadzor",
+            url=url,
+            width=1400,
+            height=880,
+            min_size=(1024, 700),
+            background_color="#0b0f19",
+            text_select=True,
+            zoomable=True
+        )
+
+        try:
+            webview.start(icon=icon_path)
+        finally:
+            print("\nZatvaranje UniFace Studio prozora i gašenje poslužitelja...")
+            try:
+                demo.close()
+            except Exception:
+                pass
+            os._exit(0)
+    else:
+        print("===================================================")
+        print("       UniFace Studio - Web Preglednik             ")
+        print("===================================================")
+        print(f"Pokrećem u web pregledniku na http://127.0.0.1:{port}...")
+        demo.launch(
+            server_name="127.0.0.1",
+            server_port=port,
+            inbrowser=True,
+            theme=custom_theme,
+            css=CUSTOM_CSS
+        )
+
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, theme=custom_theme, css=CUSTOM_CSS)
+    launch_app(desktop=True)
+
