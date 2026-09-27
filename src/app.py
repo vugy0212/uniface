@@ -611,7 +611,7 @@ def clear_single_form():
         "💾 Spremi odabrano lice u bazu", "Formular očišćen za novu osobu.",
         gr.update(value=None),
         empty_state,
-        None
+        render_person_avatar_html(None)
     )
 
 # ---------------- MASOVNI (BATCH) UNOS ----------------
@@ -719,19 +719,37 @@ def view_person_details(selected_person_str):
     """
     return gallery, info_text, gr.update(choices=sample_choices, value=sample_choices[0] if sample_choices else None)
 
-def get_person_primary_crop(person_id):
+def render_person_avatar_html(person_id):
+    empty_html = """
+    <div class="cyber-person-avatar-thumb">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+        </svg>
+    </div>
+    """
     if not person_id:
-        return None
+        return empty_html
+        
     samples = db.get_person_samples(person_id)
     if samples and os.path.exists(samples[0]["crop_path"]):
-        img_bgr, err = imread_unicode(samples[0]["crop_path"])
-        if img_bgr is not None:
-            return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    return None
+        p = samples[0]["crop_path"]
+        try:
+            import base64
+            with open(p, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            return f"""
+            <div class="cyber-person-avatar-thumb">
+                <img src="data:image/jpeg;base64,{b64}" alt="Avatar" />
+            </div>
+            """
+        except Exception:
+            pass
+    return empty_html
 
 def on_table_select(table_data, evt: gr.SelectData):
     if evt.index is None:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), None
+        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), render_person_avatar_html(None)
         
     row_idx = evt.index[0]
     person_id = None
@@ -749,15 +767,15 @@ def on_table_select(table_data, evt: gr.SelectData):
             person_id = all_p[row_idx]["id"]
             
     if person_id is None:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), None
+        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), render_person_avatar_html(None)
         
     p = db.get_person(person_id)
     if not p:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), None
+        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), render_person_avatar_html(None)
         
     choice = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
     gallery, info, sample_drop = view_person_details(choice)
-    avatar_crop = get_person_primary_crop(p["id"])
+    avatar_html = render_person_avatar_html(p["id"])
     
     name_val = p["name"]
     notes_val = p["notes"] or ""
@@ -768,17 +786,17 @@ def on_table_select(table_data, evt: gr.SelectData):
         choice, gallery, info, sample_drop,
         name_val, notes_val, btn_text, status_msg,
         gr.update(value=choice),
-        avatar_crop
+        avatar_html
     )
 
 def on_existing_person_picked(selected_choice):
     person_id = parse_person_id(selected_choice)
     if person_id is None:
-        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), None
+        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), render_person_avatar_html(None)
         
     p = db.get_person(person_id)
     if not p:
-        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), None
+        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), render_person_avatar_html(None)
         
     name_val = p["name"]
     notes_val = p["notes"] or ""
@@ -786,12 +804,12 @@ def on_existing_person_picked(selected_choice):
     status_msg = f"📌 Odabrano za unos: **{p['name']}** ({p['sample_count']} slika). Odaberite lice sa slike i kliknite Spremi."
     choice_str = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
     gallery, info, sample_drop = view_person_details(choice_str)
-    avatar_crop = get_person_primary_crop(p["id"])
+    avatar_html = render_person_avatar_html(p["id"])
     
     return (
         name_val, notes_val, btn_text, status_msg,
         gallery, info, sample_drop, gr.update(value=choice_str),
-        avatar_crop
+        avatar_html
     )
 
 def on_table_search_changed(search_query):
@@ -1639,7 +1657,19 @@ input[type="range"] {
     accent-color: #06b6d4 !important;
 }
 
-/* Person Mini-Avatar Thumbnail */
+/* Person Mini-Avatar Thumbnail (HTML-based for instantaneous, flicker-free render) */
+.cyber-avatar-wrapper {
+    width: 96px !important;
+    min-width: 96px !important;
+    max-width: 96px !important;
+    height: 96px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
 .cyber-person-avatar-thumb {
     width: 96px !important;
     height: 96px !important;
@@ -1652,12 +1682,15 @@ input[type="range"] {
     box-shadow: 0 0 16px rgba(6, 182, 212, 0.45) !important;
     background: #0f172a !important;
     overflow: hidden !important;
-    position: relative !important;
-    margin-top: 4px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
 }
 
-.cyber-person-avatar-thumb img,
-.cyber-person-avatar-thumb .image-frame img {
+.cyber-person-avatar-thumb img {
     object-fit: cover !important;
     border-radius: 12px !important;
     width: 100% !important;
@@ -1665,30 +1698,8 @@ input[type="range"] {
     display: block !important;
 }
 
-.cyber-person-avatar-thumb .image-container,
-.cyber-person-avatar-thumb .image-frame {
-    width: 100% !important;
-    height: 100% !important;
-    min-width: 96px !important;
-    min-height: 96px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    padding: 0 !important;
-    margin: 0 !important;
-}
-
-/* Hide all Gradio overlay action buttons from avatar */
-.cyber-person-avatar-thumb button,
-.cyber-person-avatar-thumb .icon-button,
-.cyber-person-avatar-thumb .toolbar,
-.cyber-person-avatar-thumb .download-btn,
-.cyber-person-avatar-thumb .fullscreen-btn,
-.cyber-person-avatar-thumb .image-button {
-    display: none !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
+.cyber-person-avatar-thumb svg {
+    opacity: 0.45;
 }
 
 .person-card-top-row {
@@ -1916,17 +1927,9 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         with gr.TabItem("Pojedinačni unos / Označavanje lica"):
                             # Mini-avatar kartica odabrane osobe i brzi pretraživač
                             with gr.Row(equal_height=True, elem_classes=["person-card-top-row"]):
-                                selected_person_avatar = gr.Image(
-                                    value=None,
-                                    type="numpy",
-                                    label="Avatar",
-                                    show_label=False,
-                                    container=False,
-                                    height=96,
-                                    width=96,
-                                    buttons=[],
-                                    interactive=False,
-                                    elem_classes=["cyber-person-avatar-thumb"]
+                                selected_person_avatar = gr.HTML(
+                                    value=render_person_avatar_html(None),
+                                    elem_classes=["cyber-avatar-wrapper"]
                                 )
                                 with gr.Column(scale=5):
                                     existing_person_picker = gr.Dropdown(
@@ -2306,7 +2309,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_name_input, single_notes_input, btn_save_single, single_save_status,
             person_gallery, person_info_md, sample_delete_dropdown, manage_person_dropdown,
             selected_person_avatar
-        ]
+        ],
+        show_progress="hidden"
     )
     
     # 8. Real-time search in table
@@ -2390,7 +2394,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_name_input, single_notes_input, btn_save_single, single_save_status,
             existing_person_picker,
             selected_person_avatar
-        ]
+        ],
+        show_progress="hidden"
     )
     
     manage_person_dropdown.change(
