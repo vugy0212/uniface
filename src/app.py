@@ -1236,6 +1236,37 @@ def on_nvr_segment_select(evt: gr.SelectData, date_filter=""):
         return item["path"], info_txt
     return None, ""
 
+def handle_open_nvr_folder():
+    from nvr_recorder import DEFAULT_RECORDINGS_DIR
+    config.open_folder_in_explorer(DEFAULT_RECORDINGS_DIR)
+    return "📂 Otvorena mapa sa snimkama u Exploreru."
+
+def handle_open_external_video(video_path):
+    if not video_path or not os.path.isfile(video_path):
+        return "⚠️ Nema odabrane video snimke."
+    try:
+        import subprocess
+        if hasattr(os, "startfile"):
+            os.startfile(video_path)
+            return f"🎬 Pokrenut vanjski player za: `{os.path.basename(video_path)}`"
+        else:
+            subprocess.Popen(["explorer", video_path])
+            return f"🎬 Pokrenut vanjski player za: `{os.path.basename(video_path)}`"
+    except Exception as e:
+        return f"❌ Greška pri pokretanju playera: {e}"
+
+def handle_delete_nvr_segment(video_path):
+    if not video_path or not os.path.isfile(video_path):
+        status_md, rows, first_vid, first_lbl = get_nvr_archive_ui_data()
+        return "⚠️ Datoteka nije pronađena.", status_md, rows, first_vid, first_lbl
+    try:
+        os.remove(video_path)
+        msg = f"🗑️ Video snimka `{os.path.basename(video_path)}` je uspješno obrisana."
+    except Exception as e:
+        msg = f"❌ Greška pri brisanju: {e}"
+    status_md, rows, first_vid, first_lbl = get_nvr_archive_ui_data()
+    return msg, status_md, rows, first_vid, first_lbl
+
 def handle_export_events_csv():
     events = db.get_detection_events(limit=5000)
     if not events:
@@ -2241,77 +2272,118 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             btn_delete_sample = gr.Button("Obriši odabranu sliku", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
                         sample_action_status = gr.Markdown("")
 
-        # ------------------ TAB 3: SPREMLJENI KADROVI (SNAPSHOTS) ------------------
-        with gr.TabItem("📸 Spremljeni Kadrovi (Snapshots)"):
-            with gr.Row():
-                with gr.Column(scale=3):
-                    snap_init_g, snap_init_t, snap_init_info, snap_init_dd, snap_init_prev, snap_init_desc = get_snapshots_ui_data()
-                    snapshots_info_md = gr.Markdown(snap_init_info)
-                with gr.Column(scale=1):
+        # ------------------ TAB 3: SPREMLJENI KADROVI & VIDEO SNIMKE ------------------
+        with gr.TabItem("📁 Spremljeni Kadrovi i Video Snimke") as tab_saved_media:
+            with gr.Tabs():
+                # POD-TAB 1: SLIKE KADROVA (SNAPSHOTS)
+                with gr.TabItem("🖼️ Slike Kadrova (Snapshots)"):
                     with gr.Row():
-                        btn_open_snapshots_folder = gr.Button("📂 Otvori mapu u Exploreru", variant="primary")
-                        btn_refresh_snapshots = gr.Button("🔄 Osvježi galeriju", variant="secondary")
+                        with gr.Column(scale=3):
+                            snap_init_g, snap_init_t, snap_init_info, snap_init_dd, snap_init_prev, snap_init_desc = get_snapshots_ui_data()
+                            snapshots_info_md = gr.Markdown(snap_init_info)
+                        with gr.Column(scale=1):
+                            with gr.Row():
+                                btn_open_snapshots_folder = gr.Button("📂 Otvori mapu sa slikama", variant="primary")
+                                btn_refresh_snapshots = gr.Button("🔄 Osvježi slike", variant="secondary")
 
-            with gr.Row():
-                # Lijevi stupac: Galerija sličica (male ikone)
-                with gr.Column(scale=3):
-                    gr.Markdown("### 🖼️ Sličice spremljenih kadrova *(kliknite na sliku za odabir)*")
-                    snapshots_gallery = gr.Gallery(
-                        label="Spremljeni kadrovi",
-                        columns=4,
-                        rows=2,
-                        height=420,
-                        allow_preview=False,
-                        value=snap_init_g
-                    )
-                    
-                    gr.Markdown("### 📋 Popis datoteka na disku")
-                    snapshots_table = gr.Dataframe(
-                        headers=["Naziv datoteke", "Datum i vrijeme snimanja", "Veličina"],
-                        label="Popis snimaka",
-                        interactive=False,
-                        value=snap_init_t
-                    )
-
-                # Desni stupac: Detalji odabrane snimke i akcije
-                with gr.Column(scale=2):
-                    gr.Markdown("### 🔍 Pregled odabranog kadra i akcije")
-                    selected_snap_dropdown = gr.Dropdown(
-                        label="Odaberite snimku za analizu ili brisanje:",
-                        choices=[r[0] for r in snap_init_t],
-                        value=snap_init_t[0][0] if snap_init_t else None,
-                        interactive=True
-                    )
-                    selected_snap_preview = gr.Image(
-                        type="filepath",
-                        label="Prikaz kadra (Annotated / HUD)",
-                        value=snap_init_prev,
-                        height=280
-                    )
-                    selected_snap_info = gr.Markdown(snap_init_desc)
-                    
                     with gr.Row():
-                        btn_send_to_rec = gr.Button("🔍 Pošalji na prepoznavanje lica", variant="primary")
-                        btn_delete_snap = gr.Button("🗑️ Obriši snimku", variant="stop")
-                    snap_action_status = gr.Markdown("")
+                        # Lijevi stupac: Galerija sličica (male ikone)
+                        with gr.Column(scale=3):
+                            gr.Markdown("### 🖼️ Sličice spremljenih kadrova *(kliknite na sliku za odabir)*")
+                            snapshots_gallery = gr.Gallery(
+                                label="Spremljeni kadrovi",
+                                columns=4,
+                                rows=2,
+                                height=420,
+                                allow_preview=False,
+                                value=snap_init_g
+                            )
+                            
+                            gr.Markdown("### 📋 Popis datoteka na disku")
+                            snapshots_table = gr.Dataframe(
+                                headers=["Naziv datoteke", "Datum i vrijeme snimanja", "Veličina"],
+                                label="Popis snimaka",
+                                interactive=False,
+                                value=snap_init_t
+                            )
 
-            with gr.Accordion("⚙️ Postavke lokacije spremanja snimaka (Snapshot Folder)", open=False):
-                gr.Markdown(
-                    """
-                    Ovdje možete promijeniti mapu u koju se automatski spremaju kadrovi kada u live video prozoru pritisnete tipku **S**.
-                    Zadana mapa je unutar aplikacije (`data/snapshots`), no možete odabrati bilo koju mapu na vašem disku (npr. `D:\\Nadzor\\Kadrovi`).
-                    """
-                )
-                with gr.Row():
-                    custom_snap_dir_input = gr.Textbox(
-                        label="Putanja do mape za spremanje snimaka na računalu",
-                        value=config.get_snapshot_dir(),
-                        placeholder="npr. D:\\Nadzor\\Snimke ili C:\\UniFace_Kadrovi",
-                        scale=3
-                    )
-                    btn_save_snap_dir = gr.Button("💾 Spremi novu mapu", variant="primary", scale=1)
-                    btn_reset_snap_dir = gr.Button("🔄 Vrati na zadano (data/snapshots)", variant="secondary", scale=1)
-                snap_dir_status_md = gr.Markdown("")
+                        # Desni stupac: Detalji odabrane snimke i akcije
+                        with gr.Column(scale=2):
+                            gr.Markdown("### 🔍 Pregled odabranog kadra i akcije")
+                            selected_snap_dropdown = gr.Dropdown(
+                                label="Odaberite snimku za analizu ili brisanje:",
+                                choices=[r[0] for r in snap_init_t],
+                                value=snap_init_t[0][0] if snap_init_t else None,
+                                interactive=True
+                            )
+                            selected_snap_preview = gr.Image(
+                                type="filepath",
+                                label="Prikaz kadra (Annotated / HUD)",
+                                value=snap_init_prev,
+                                height=280
+                            )
+                            selected_snap_info = gr.Markdown(snap_init_desc)
+                            
+                            with gr.Row():
+                                btn_send_to_rec = gr.Button("🔍 Pošalji na prepoznavanje lica", variant="primary")
+                                btn_delete_snap = gr.Button("🗑️ Obriši sliku", variant="stop")
+                            snap_action_status = gr.Markdown("")
+
+                    with gr.Accordion("⚙️ Postavke lokacije spremanja snimaka (Snapshot Folder)", open=False):
+                        gr.Markdown(
+                            """
+                            Ovdje možete promijeniti mapu u koju se automatski spremaju kadrovi kada u live video prozoru pritisnete tipku **S**.
+                            Zadana mapa je unutar aplikacije (`data/snapshots`), no možete odabrati bilo koju mapu na vašem disku (npr. `D:\\Nadzor\\Kadrovi`).
+                            """
+                        )
+                        with gr.Row():
+                            custom_snap_dir_input = gr.Textbox(
+                                label="Putanja do mape za spremanje snimaka na računalu",
+                                value=config.get_snapshot_dir(),
+                                placeholder="npr. D:\\Nadzor\\Snimke ili C:\\UniFace_Kadrovi",
+                                scale=3
+                            )
+                            btn_save_snap_dir = gr.Button("💾 Spremi novu mapu", variant="primary", scale=1)
+                            btn_reset_snap_dir = gr.Button("🔄 Vrati na zadano (data/snapshots)", variant="secondary", scale=1)
+                        snap_dir_status_md = gr.Markdown("")
+
+                # POD-TAB 2: NVR VIDEO SNIMKE
+                with gr.TabItem("📹 NVR Video Snimke (Video Zapisi)"):
+                    nvr_stat_init, nvr_table_init, nvr_vid_init, nvr_lbl_init = get_nvr_archive_ui_data()
+                    with gr.Row():
+                        with gr.Column(scale=3):
+                            nvr_storage_status_md = gr.Markdown(nvr_stat_init)
+                        with gr.Column(scale=1):
+                            with gr.Row():
+                                btn_open_nvr_folder = gr.Button("📂 Otvori mapu sa snimkama", variant="primary")
+                                btn_refresh_nvr_tab = gr.Button("🔄 Osvježi video snimke", variant="secondary")
+
+                    with gr.Row():
+                        # Lijevi stupac: Popis MP4 video segmenata
+                        with gr.Column(scale=3):
+                            gr.Markdown("### 📼 Popis snimljenih video segmenata *(kliknite redak za reprodukciju)*")
+                            nvr_archive_table = gr.Dataframe(
+                                headers=["Datoteka", "Kamera", "Datum", "Vrijeme", "Veličina", "Putanja"],
+                                value=nvr_table_init,
+                                interactive=False,
+                                label="Popis video segmenata na disku",
+                                max_height=480
+                            )
+
+                        # Desni stupac: Video Player i akcije
+                        with gr.Column(scale=2):
+                            gr.Markdown("### 🎬 Video Reprodukcija i Detalji")
+                            nvr_selected_info_md = gr.Markdown(nvr_lbl_init)
+                            nvr_video_preview = gr.Video(
+                                value=nvr_vid_init,
+                                label="▶️ Reprodukcija video segmenta",
+                                interactive=False,
+                                height=300
+                            )
+                            with gr.Row():
+                                btn_open_video_player = gr.Button("🖥️ Otvori u vanjskom playeru", variant="secondary")
+                                btn_delete_video_seg = gr.Button("🗑️ Obriši ovu snimku", variant="stop")
+                            nvr_action_status_md = gr.Markdown("")
 
         # ------------------ TAB 4: DNEVNIK PROLAZAKA (EVIDENCIJA) ------------------
         with gr.TabItem("📋 Dnevnik Prolazaka (Evidencija)") as tab_events:
@@ -2367,28 +2439,6 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                 btn_export_events_csv = gr.Button("📥 Izvezi cijeli dnevnik u CSV (Excel)", variant="primary", scale=1)
                 events_export_file = gr.File(label="Preuzmi izvezenu CSV datoteku", visible=False, scale=2)
             events_status_md = gr.Markdown("")
-
-            with gr.Accordion("📹 NVR Video Arhiva (Svi snimljeni video segmenti)", open=False):
-                nvr_stat_init, nvr_table_init, nvr_vid_init, nvr_lbl_init = get_nvr_archive_ui_data()
-                nvr_storage_status_md = gr.Markdown(nvr_stat_init)
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        nvr_archive_table = gr.Dataframe(
-                            headers=["Datoteka", "Kamera", "Datum", "Vrijeme", "Veličina", "Putanja"],
-                            value=nvr_table_init,
-                            interactive=False,
-                            label="Popis snimljenih video segmenata",
-                            max_height=380
-                        )
-                        with gr.Row():
-                            btn_refresh_nvr_archive = gr.Button("🔄 Osvježi video arhivu", variant="secondary")
-                    with gr.Column(scale=2):
-                        nvr_selected_info_md = gr.Markdown(nvr_lbl_init)
-                        nvr_video_preview = gr.Video(
-                            value=nvr_vid_init,
-                            label="▶️ Reprodukcija odabranog video segmenta",
-                            interactive=False
-                        )
 
         # ------------------ TAB 5: O SUSTAVU & SIGURNOSNA KOPIJA ------------------
         with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
@@ -2741,13 +2791,38 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
     )
 
-    # 10. NVR Video Archive wiring
+    # 10. NVR Video Archive wiring in Tab 3
     nvr_archive_table.select(
         fn=on_nvr_segment_select,
         outputs=[nvr_video_preview, nvr_selected_info_md]
     )
 
-    btn_refresh_nvr_archive.click(
+    btn_refresh_nvr_tab.click(
+        fn=get_nvr_archive_ui_data,
+        outputs=[nvr_storage_status_md, nvr_archive_table, nvr_video_preview, nvr_selected_info_md]
+    )
+
+    btn_open_nvr_folder.click(
+        fn=handle_open_nvr_folder,
+        outputs=[nvr_action_status_md]
+    )
+
+    btn_open_video_player.click(
+        fn=handle_open_external_video,
+        inputs=[nvr_video_preview],
+        outputs=[nvr_action_status_md]
+    )
+
+    btn_delete_video_seg.click(
+        fn=handle_delete_nvr_segment,
+        inputs=[nvr_video_preview],
+        outputs=[nvr_action_status_md, nvr_storage_status_md, nvr_archive_table, nvr_video_preview, nvr_selected_info_md]
+    )
+
+    tab_saved_media.select(
+        fn=get_snapshots_ui_data,
+        outputs=[snapshots_gallery, snapshots_table, snapshots_info_md, selected_snap_dropdown, selected_snap_preview, selected_snap_info]
+    ).then(
         fn=get_nvr_archive_ui_data,
         outputs=[nvr_storage_status_md, nvr_archive_table, nvr_video_preview, nvr_selected_info_md]
     )
