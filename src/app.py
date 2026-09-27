@@ -94,14 +94,100 @@ def refresh_database_view(search_query=""):
         
     return rows, stats_text
 
+# ---------------- REAL-TIME DETECTION CARDS GENERATOR ----------------
+def generate_detection_cards_html(results):
+    if not results:
+        return """
+        <div class="detection-panel-inner">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <span class="pulse-icon"></span> Real-time Detekcija
+                </div>
+                <span class="panel-badge">Spremno</span>
+            </div>
+            <div class="detection-empty-state">
+                <div class="radar-scan-box">
+                    <div class="radar-beam"></div>
+                </div>
+                <div class="empty-title">Čekanje na unos</div>
+                <div class="empty-sub">Učitajte fotografiju ili pokrenite live kameru za biometrijsku analizu lica u stvarnom vremenu.</div>
+            </div>
+        </div>
+        """
+    import base64
+    cards = []
+    for r in results:
+        success, buffer = cv2.imencode('.jpg', r["crop_bgr"])
+        if success:
+            img_b64 = base64.b64encode(buffer).decode('utf-8')
+            img_src = f"data:image/jpeg;base64,{img_b64}"
+        else:
+            img_src = ""
+        
+        sim_val = r.get("similarity", 0)
+        if isinstance(sim_val, (int, float)):
+            sim_str = f"{float(sim_val)*100:.0f}% Match"
+        else:
+            sim_str = f"{sim_val} Match"
+            
+        status = r.get("status", "Nepoznat")
+        if status == "Prepoznat":
+            badge_cls = "match-success"
+            status_text = "Prepoznato"
+        elif status == "Moguće poklapanje":
+            badge_cls = "match-warning"
+            status_text = "Moguće"
+        else:
+            badge_cls = "match-unknown"
+            status_text = "Nepoznato"
+            
+        name = r.get("best_name", "Nepoznata osoba")
+        age = r.get("age", "-")
+        gender = r.get("gender", "-")
+        
+        cards.append(f"""
+        <div class="cyber-detection-card {badge_cls}">
+            <div class="card-avatar-wrap">
+                <img src="{img_src}" class="card-avatar" alt="{name}" />
+                <span class="card-status-dot"></span>
+            </div>
+            <div class="card-details">
+                <div class="card-name" title="{name}">{name}</div>
+                <div class="card-meta">
+                    <span class="meta-item"><i class="meta-label">Dob:</i> <b>{age}</b></span>
+                    <span class="meta-sep">•</span>
+                    <span class="meta-item"><i class="meta-label">Spol:</i> <b>{gender}</b></span>
+                </div>
+                <div class="card-similarity-badge">
+                    <span class="sim-pill">{sim_str}</span>
+                </div>
+            </div>
+        </div>
+        """)
+        
+    cards_html = "".join(cards)
+    return f"""
+    <div class="detection-panel-inner">
+        <div class="panel-header">
+            <div class="panel-title">
+                <span class="pulse-icon active"></span> Real-time Detekcija
+            </div>
+            <span class="panel-badge active">{len(results)} lica</span>
+        </div>
+        <div class="cyber-cards-scroll">
+            {cards_html}
+        </div>
+    </div>
+    """
+
 # ---------------- PREPOZNAVANJE ----------------
 def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
     if image is None:
-        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), []
+        return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), [], generate_detection_cards_html([])
     
     img_bgr, err = imread_unicode(image)
     if img_bgr is None:
-        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), []
+        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), [], generate_detection_cards_html([])
         
     annotated_bgr, results = face_engine.process_and_annotate(
         img_bgr,
@@ -146,7 +232,8 @@ def recognize_faces(image, threshold, draw_landmarks, blur_unknown):
     
     summary = f"🔍 Pronađeno lica: **{len(results)}** | ✅ Prepoznato: **{num_recognized}** | ⚠️ Moguće (ispod praga): **{num_possible}** | ❌ Nepoznato: **{num_unknown}**"
     dropdown_update = gr.update(choices=candidate_choices, value=candidate_choices[0] if candidate_choices else None)
-    return annotated_rgb, crops_gallery, table_data, summary, dropdown_update, results
+    cards_html = generate_detection_cards_html(results)
+    return annotated_rgb, crops_gallery, table_data, summary, dropdown_update, results, cards_html
 
 def on_recognition_gallery_click(evt: gr.SelectData, rec_faces):
     faces = rec_faces or []
@@ -891,18 +978,18 @@ def on_reset_snapshot_dir_click():
 
 def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur):
     if not filename:
-        return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], "⚠️ Nema odabrane snimke."
+        return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], generate_detection_cards_html([]), "⚠️ Nema odabrane snimke."
     snap_dir = config.get_snapshot_dir()
     path = os.path.join(snap_dir, filename)
     if not os.path.isfile(path):
-        return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], "⚠️ Datoteka nije pronađena."
+        return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], generate_detection_cards_html([]), "⚠️ Datoteka nije pronađena."
     
     pil_img = Image.open(path).convert("RGB")
-    annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state = recognize_faces(
+    annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html = recognize_faces(
         pil_img, threshold, landmarks, blur
     )
     msg = f"✅ Kadar `{filename}` je prebačen u Tab 1 i analiziran!"
-    return pil_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, msg
+    return pil_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html, msg
 
 # ---------------- DETECTION EVENT LOG HELPERS ----------------
 def get_events_ui_data(search_query=""):
@@ -1004,14 +1091,547 @@ def handle_export_events_csv():
             ])
     return gr.update(value=export_path, visible=True), f"✅ Uspješno izvezeno {len(events)} prolazaka u CSV!"
 
-# ---------------- GRADIO UI ----------------
+# ---------------- GRADIO UI THEME & CYBER STYLING ----------------
+CUSTOM_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+    --cyber-bg: #070a12;
+    --cyber-card: #0d1424;
+    --cyber-card-elevated: #111a30;
+    --cyber-card-border: rgba(56, 189, 248, 0.16);
+    --cyber-cyan: #06b6d4;
+    --cyber-emerald: #10b981;
+    --cyber-blue: #3b82f6;
+    --cyber-glow-cyan: 0 0 18px rgba(6, 182, 212, 0.35);
+    --cyber-glow-emerald: 0 0 18px rgba(16, 185, 129, 0.35);
+    --text-primary: #f8fafc;
+    --text-muted: #94a3b8;
+}
+
+body, html {
+    background-color: var(--cyber-bg) !important;
+    color: var(--text-primary) !important;
+    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    margin: 0;
+    padding: 0;
+}
+
+.gradio-container {
+    background: radial-gradient(circle at 50% 0%, #111d38 0%, #070a12 70%) !important;
+    color: var(--text-primary) !important;
+    max-width: 98% !important;
+    padding: 10px 16px !important;
+}
+
+/* Header Bar */
+.cyber-header-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(13, 20, 36, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--cyber-card-border);
+    border-radius: 14px;
+    padding: 14px 22px;
+    margin-bottom: 14px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    flex-wrap: wrap;
+    gap: 14px;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.header-logo-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(16, 185, 129, 0.2));
+    border: 1px solid rgba(6, 182, 212, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #06b6d4;
+    box-shadow: 0 0 14px rgba(6, 182, 212, 0.3);
+}
+
+.header-titles {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.header-main-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.title-brand {
+    background: linear-gradient(135deg, #38bdf8 0%, #34d399 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.title-divider {
+    color: #475569;
+    font-weight: 300;
+}
+
+.title-desc {
+    color: #f1f5f9;
+}
+
+.header-subtitle {
+    font-size: 0.82rem;
+    color: #94a3b8;
+}
+
+.header-badges {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.header-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 13px;
+    border-radius: 9999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pill-success {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.35);
+    color: #34d399;
+}
+
+.pill-neutral {
+    background: rgba(30, 41, 59, 0.7);
+    border-color: rgba(56, 189, 248, 0.25);
+    color: #93c5fd;
+}
+
+.pill-ai {
+    background: rgba(99, 102, 241, 0.12);
+    border-color: rgba(99, 102, 241, 0.35);
+    color: #a5b4fc;
+}
+
+.pill-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.pulse-green {
+    background-color: #10b981;
+    box-shadow: 0 0 8px #10b981;
+    animation: pulseDot 2s infinite ease-in-out;
+}
+
+@keyframes pulseDot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.pill-check {
+    color: #34d399;
+    font-weight: bold;
+}
+
+/* Tabs Styling */
+.tabs > .tab-nav {
+    background: rgba(13, 20, 36, 0.7) !important;
+    border-radius: 12px !important;
+    padding: 6px !important;
+    border: 1px solid rgba(56, 189, 248, 0.14) !important;
+    gap: 6px !important;
+    margin-bottom: 14px !important;
+}
+
+.tabs > .tab-nav > button {
+    color: #94a3b8 !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+    padding: 8px 16px !important;
+    border: none !important;
+    transition: all 0.2s ease !important;
+}
+
+.tabs > .tab-nav > button:hover {
+    color: #ffffff !important;
+    background: rgba(255, 255, 255, 0.05) !important;
+}
+
+.tabs > .tab-nav > button.selected {
+    color: #ffffff !important;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.25) 0%, rgba(16, 185, 129, 0.18) 100%) !important;
+    border: 1px solid rgba(6, 182, 212, 0.5) !important;
+    box-shadow: 0 0 15px rgba(6, 182, 212, 0.25) !important;
+}
+
+/* Cyber Cards & Panels */
+.cyber-card {
+    background: rgba(13, 20, 36, 0.8) !important;
+    backdrop-filter: blur(12px) !important;
+    border: 1px solid var(--cyber-card-border) !important;
+    border-radius: 14px !important;
+    padding: 14px !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Buttons */
+.btn-cyber-primary {
+    background: linear-gradient(135deg, #059669 0%, #0284c7 100%) !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    border: 1px solid rgba(56, 189, 248, 0.4) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 4px 14px rgba(6, 182, 212, 0.3) !important;
+    transition: all 0.25s ease !important;
+}
+
+.btn-cyber-primary:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 20px rgba(6, 182, 212, 0.55) !important;
+    filter: brightness(1.1) !important;
+}
+
+.btn-cyber-live {
+    background: rgba(15, 23, 42, 0.85) !important;
+    color: #38bdf8 !important;
+    font-weight: 700 !important;
+    border: 1px solid rgba(56, 189, 248, 0.4) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 2px 10px rgba(56, 189, 248, 0.15) !important;
+    transition: all 0.25s ease !important;
+}
+
+.btn-cyber-live:hover {
+    background: rgba(56, 189, 248, 0.15) !important;
+    border-color: #38bdf8 !important;
+    color: #ffffff !important;
+    box-shadow: 0 0 16px rgba(56, 189, 248, 0.4) !important;
+}
+
+.btn-cyber-secondary {
+    background: rgba(30, 41, 59, 0.7) !important;
+    color: #e2e8f0 !important;
+    border: 1px solid rgba(148, 163, 184, 0.25) !important;
+    border-radius: 10px !important;
+}
+
+.btn-cyber-secondary:hover {
+    background: rgba(51, 65, 85, 0.8) !important;
+    border-color: rgba(56, 189, 248, 0.5) !important;
+    color: #ffffff !important;
+}
+
+/* Visual Panel & HUD Frame */
+.cyber-preview-frame {
+    border-radius: 12px !important;
+    border: 1px solid rgba(6, 182, 212, 0.35) !important;
+    background: radial-gradient(circle at center, rgba(17, 26, 48, 0.6) 0%, rgba(7, 10, 18, 0.95) 100%) !important;
+    box-shadow: inset 0 0 20px rgba(6, 182, 212, 0.12), 0 4px 20px rgba(0, 0, 0, 0.4) !important;
+}
+
+.cyber-status-text {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.85rem;
+}
+
+/* Real-time Detection Side Panel */
+.detection-panel-container {
+    min-height: 420px;
+    display: flex;
+    flex-direction: column;
+}
+
+.detection-panel-inner {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.15);
+    margin-bottom: 12px;
+}
+
+.panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.pulse-icon {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #06b6d4;
+    box-shadow: 0 0 8px #06b6d4;
+}
+
+.pulse-icon.active {
+    background-color: #10b981;
+    box-shadow: 0 0 10px #10b981;
+    animation: pulseDot 1.5s infinite ease-in-out;
+}
+
+.panel-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(30, 41, 59, 0.8);
+    color: #94a3b8;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.panel-badge.active {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border-color: rgba(16, 185, 129, 0.35);
+}
+
+/* Empty State Radar Scan */
+.detection-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 14px;
+    text-align: center;
+    background: rgba(15, 23, 42, 0.4);
+    border-radius: 12px;
+    border: 1px dashed rgba(56, 189, 248, 0.2);
+    margin: auto 0;
+}
+
+.radar-scan-box {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    border: 2px solid rgba(6, 182, 212, 0.3);
+    position: relative;
+    margin-bottom: 14px;
+    box-shadow: 0 0 14px rgba(6, 182, 212, 0.15);
+    overflow: hidden;
+}
+
+.radar-beam {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, rgba(6, 182, 212, 0.4) 0deg, transparent 60deg, transparent 360deg);
+    animation: radarSweep 3s linear infinite;
+}
+
+@keyframes radarSweep {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.empty-title {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    margin-bottom: 4px;
+}
+
+.empty-sub {
+    font-size: 0.78rem;
+    color: #64748b;
+    line-height: 1.4;
+}
+
+/* Cyber Detection Cards */
+.cyber-cards-scroll {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 460px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.cyber-detection-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(15, 23, 42, 0.7);
+    border-radius: 12px;
+    padding: 8px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    transition: all 0.25s ease;
+}
+
+.cyber-detection-card:hover {
+    transform: translateX(2px);
+    background: rgba(30, 41, 59, 0.85);
+}
+
+.cyber-detection-card.match-success {
+    border-left: 3px solid #10b981;
+    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.1);
+}
+
+.cyber-detection-card.match-warning {
+    border-left: 3px solid #f59e0b;
+    box-shadow: 0 2px 10px rgba(245, 158, 11, 0.1);
+}
+
+.cyber-detection-card.match-unknown {
+    border-left: 3px solid #64748b;
+}
+
+.card-avatar-wrap {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+}
+
+.card-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    object-fit: cover;
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    background: #1e293b;
+}
+
+.card-status-dot {
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 2px solid #0d1424;
+}
+
+.match-success .card-status-dot { background-color: #10b981; }
+.match-warning .card-status-dot { background-color: #f59e0b; }
+.match-unknown .card-status-dot { background-color: #64748b; }
+
+.card-details {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.card-name {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #f8fafc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.card-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.75rem;
+    color: #94a3b8;
+}
+
+.card-meta b {
+    color: #cbd5e1;
+}
+
+.meta-sep {
+    color: #475569;
+}
+
+.card-similarity-badge {
+    margin-top: 1px;
+}
+
+.sim-pill {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.match-success .sim-pill {
+    background: rgba(16, 185, 129, 0.18);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.match-warning .sim-pill {
+    background: rgba(245, 158, 11, 0.18);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.match-unknown .sim-pill {
+    background: rgba(100, 116, 139, 0.2);
+    color: #94a3b8;
+    border: 1px solid rgba(100, 116, 139, 0.35);
+}
+
+/* Accordions */
+.cyber-accordion {
+    background: rgba(15, 23, 42, 0.5) !important;
+    border: 1px solid rgba(56, 189, 248, 0.12) !important;
+    border-radius: 10px !important;
+    margin-top: 8px !important;
+}
+
+input[type="range"] {
+    accent-color: #06b6d4 !important;
+}
+"""
+
 custom_theme = gr.themes.Soft(
-    primary_hue="blue",
-    secondary_hue="slate",
+    primary_hue="cyan",
+    secondary_hue="blue",
     neutral_hue="slate"
 )
 
-with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
+with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica", theme=custom_theme, css=CUSTOM_CSS) as demo:
     # Per-session state (eliminates global variables and multi-user race conditions)
     rec_faces_state = gr.State([])
     single_enroll_state = gr.State({
@@ -1021,24 +1641,59 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         "saved_indices": set()
     })
 
-    gr.Markdown(
+    # Modern Cyber Glassmorphism Header Bar
+    gr.HTML(
         """
-        # 👤 UniFace - Biometrijski Sustav za Prepoznavanje Lica
-        **100% lokalno i sigurno** | RetinaFace detektor + ArcFace ResNet50 prepoznavanje + FairFace analiza dobi i spola.
+        <div class="cyber-header-bar">
+            <div class="header-left">
+                <div class="header-logo-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 3H5a2 2 0 0 0-2 2v4m0 6v4a2 2 0 0 0 2 2h4m6 0h4a2 2 0 0 0 2-2v-4m0-6V5a2 2 0 0 0-2-2h-4"/>
+                        <circle cx="12" cy="10" r="3"/>
+                        <path d="M7 18a5 5 0 0 1 10 0"/>
+                    </svg>
+                </div>
+                <div class="header-titles">
+                    <div class="header-main-title">
+                        <span class="title-brand">UniFace</span>
+                        <span class="title-divider">•</span>
+                        <span class="title-desc">Biometrijski Sustav za Prepoznavanje Lica</span>
+                    </div>
+                    <div class="header-subtitle">
+                        100% lokalno i sigurno &nbsp;|&nbsp; RetinaFace detektor • ArcFace ResNet50 prepoznavanje • FairFace analiza dobi i spola
+                    </div>
+                </div>
+            </div>
+            <div class="header-badges">
+                <div class="header-pill pill-success">
+                    <span class="pill-dot pulse-green"></span>
+                    <span>100% Lokalno i sigurno</span>
+                </div>
+                <div class="header-pill pill-neutral">
+                    <span class="pill-icon">🖥️</span>
+                    <span>Server aktivan</span>
+                    <span class="pill-check">✓</span>
+                </div>
+                <div class="header-pill pill-ai">
+                    <span class="pill-icon">🧠</span>
+                    <span>AI Engine (ONNX)</span>
+                </div>
+            </div>
+        </div>
         """
     )
     
     with gr.Tabs():
         # ------------------ TAB 1: PREPOZNAVANJE ------------------
         with gr.TabItem("🔍 Prepoznavanje lica"):
-            with gr.Row():
-                with gr.Column(scale=1):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=4, min_width=320, elem_classes=["cyber-card"]):
                     input_img = gr.Image(
                         type="pil",
                         label="Učitaj sliku ili snimi web kamerom",
                         sources=["upload", "webcam"]
                     )
-                    with gr.Accordion("⚙️ Napredne postavke analize", open=True):
+                    with gr.Accordion("⚙️ Napredne postavke analize", open=False, elem_classes=["cyber-accordion"]):
                         threshold_slider = gr.Slider(
                             minimum=0.0,
                             maximum=1.0,
@@ -1051,7 +1706,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             landmarks_chk = gr.Checkbox(value=False, label="Prikaži točke lica (Landmarks)")
                             blur_chk = gr.Checkbox(value=False, label="Zamućenje nepoznatih lica")
                             
-                    with gr.Accordion("📹 Odabir izvora za Live Prikaz (USB / IP Nadzor / YouTube / Video)", open=False):
+                    with gr.Accordion("📹 Odabir izvora za Live Prikaz (USB / IP Nadzor / YouTube / Video)", open=False, elem_classes=["cyber-accordion"]):
                         cam_source_type = gr.Radio(
                             choices=[
                                 "USB Web Kamera", 
@@ -1091,7 +1746,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             value=0,
                             step=5,
                             label="⏩ Početak reprodukcije videa (u sekundama)",
-                            info="Omogućuje pokretanje YouTube ili lokalnog videa od željene minute/sekunde (npr. 60 = 01:00 min, 300 = 05:00 min)",
+                            info="Omogućuje pokretanje YouTube ili lokalnog videa od željene minute/sekunde",
                             visible=False
                         )
 
@@ -1099,7 +1754,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         cam_enable_log = gr.Checkbox(
                             value=False,
                             label="📋 Aktiviraj evidenciju prolazaka (Dnevnik)",
-                            info="Automatski zapisuje prepoznate osobe u evidenciju prolazaka uz vrijeme i sličnost",
+                            info="Automatski zapisuje prepoznate osobe u evidenciju",
                             scale=2
                         )
                         cam_cooldown_sec = gr.Slider(
@@ -1114,43 +1769,59 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         )
 
                     with gr.Row():
-                        btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2)
-                        btn_launch_live = gr.Button("🎥 Pokreni Live Kameru (Prozor)", variant="secondary", scale=2)
-                        btn_open_snaps_quick = gr.Button("📂 Otvori mapu snimki (S)", variant="secondary", scale=1)
+                        btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
+                        btn_launch_live = gr.Button("🎥 Pokreni Live Kameru", variant="secondary", scale=2, elem_classes=["btn-cyber-live"])
+                        btn_open_snaps_quick = gr.Button("📂 Snimke (S)", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
                     
-                with gr.Column(scale=1):
-                    annotated_out = gr.Image(type="numpy", label="Vizualni rezultat prepoznavanja")
-                    rec_status_md = gr.Markdown("Učitajte sliku i kliknite 'Pokreni prepoznavanje'.")
-                    
-            with gr.Row():
-                with gr.Column():
-                    gr.Markdown("### 📊 Detaljna analiza svakog detektiranog lica")
-                    results_table = gr.Dataframe(
-                        headers=[
-                            "Lice #",
-                            "Status",
-                            "Identificirana Osoba",
-                            "Sličnost",
-                            "Prag",
-                            "Margina sigurnosti",
-                            "Kvaliteta profila",
-                            "Dob (procjena)",
-                            "Spol"
-                        ],
-                        label="Rezultati prepoznavanja i biometrijske procjene",
-                        interactive=False
+                # 2. Srednji stupac: Vizualni rezultat (cca 42% širine)
+                with gr.Column(scale=5, min_width=380, elem_classes=["cyber-card"]):
+                    annotated_out = gr.Image(
+                        type="numpy", 
+                        label="Vizualni rezultat prepoznavanja",
+                        elem_classes=["cyber-preview-frame"]
+                    )
+                    rec_status_md = gr.Markdown(
+                        "Učitajte sliku i kliknite 'Pokreni prepoznavanje'.",
+                        elem_classes=["cyber-status-text"]
                     )
 
+                # 3. Desni stupac: Real-time Detection panel (cca 25% širine)
+                with gr.Column(scale=3, min_width=270, elem_classes=["cyber-card"]):
+                    detection_cards_html = gr.HTML(
+                        value=generate_detection_cards_html([]),
+                        elem_classes=["detection-panel-container"]
+                    )
+                    
+            # Donja zona: Detaljna biometrijska tablica & brzi unos
             with gr.Row():
-                with gr.Column(scale=1):
+                with gr.Column(elem_classes=["cyber-card"]):
+                    with gr.Accordion("📊 Detaljna biometrijska tablica & analitika detektiranih lica", open=False):
+                        results_table = gr.Dataframe(
+                            headers=[
+                                "Lice #",
+                                "Status",
+                                "Identificirana Osoba",
+                                "Sličnost",
+                                "Prag",
+                                "Margina sigurnosti",
+                                "Kvaliteta profila",
+                                "Dob (procjena)",
+                                "Spol"
+                            ],
+                            label="Rezultati prepoznavanja i biometrijske procjene",
+                            interactive=False
+                        )
+
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes=["cyber-card"]):
                     gr.Markdown("### 🖼️ Izrezana lica s fotografije *(kliknite na lice za brzi unos)*")
                     crops_gallery_out = gr.Gallery(
                         label="Galerija detektiranih lica",
-                        columns=5,
+                        columns=4,
                         height="auto",
                         allow_preview=False
                     )
-                with gr.Column(scale=1):
+                with gr.Column(scale=1, elem_classes=["cyber-card"]):
                     gr.Markdown("### ➕ Brzi unos nepoznate osobe u bazu")
                     gr.Markdown("Kliknite na lice u galeriji s lijeve strane ili odaberite iz padajućeg izbornika:")
                     with gr.Row():
@@ -1160,7 +1831,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             allow_custom_value=True
                         )
                         quick_name_input = gr.Textbox(label="Ime osobe", placeholder="npr. Marko Horvat")
-                    btn_quick_add = gr.Button("Spremi ovo lice u bazu za tu osobu", variant="secondary")
+                    btn_quick_add = gr.Button("Spremi ovo lice u bazu za tu osobu", variant="secondary", elem_classes=["btn-cyber-primary"])
                     quick_add_status = gr.Markdown("")
 
         # ------------------ TAB 2: UPRAVLJANJE BAZOM ------------------
@@ -1563,7 +2234,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     btn_recognize.click(
         fn=recognize_faces,
         inputs=[input_img, threshold_slider, landmarks_chk, blur_chk],
-        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state]
+        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
     )
 
     def on_cam_source_change(st):
@@ -1692,7 +2363,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     btn_send_to_rec.click(
         fn=on_send_snapshot_to_recognition,
         inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_chk],
-        outputs=[input_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, snap_action_status]
+        outputs=[input_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html, snap_action_status]
     )
 
     # 9. Detection Events wiring
