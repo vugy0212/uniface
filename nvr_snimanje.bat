@@ -17,8 +17,15 @@ echo =========================================================================
 echo.
 
 cd /d "%~dp0"
-call .venv\Scripts\activate.bat
 
-python run_nvr.py --cam1 0 --name1 "USB Web Kamera" --cam2 "rtsp://admin:admin@192.168.50.236:554/11" --name2 "Denver IP Kamera" --segment-min 5 --max-gb 20 --threshold 0.45 --cooldown 30
+if exist "python\python.exe" (
+    set "PY_CMD=python\python.exe"
+) else if exist ".venv\Scripts\python.exe" (
+    set "PY_CMD=.venv\Scripts\python.exe"
+) else (
+    set "PY_CMD=python"
+)
+
+"%PY_CMD%" run_nvr.py --cam1 0 --name1 "USB Web Kamera" --cam2 "rtsp://admin:admin@192.168.50.236:554/11" --name2 "Denver IP Kamera" --segment-min 5 --max-gb 20 --threshold 0.45 --cooldown 30
 
 pause

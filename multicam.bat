@@ -3,7 +3,9 @@ chcp 65001 >nul
 title UniFace Multi-Camera 2x2 Grid
 cd /d "%~dp0"
 
-if exist ".venv\Scripts\python.exe" (
+if exist "python\python.exe" (
+    set "PYTHON_EXE=python\python.exe"
+) else if exist ".venv\Scripts\python.exe" (
     set "PYTHON_EXE=.venv\Scripts\python.exe"
 ) else (
     set "PYTHON_EXE=python"

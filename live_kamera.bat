@@ -7,11 +7,11 @@ echo.
 
 cd /d "%~dp0"
 
-:: Pronadi Python unutar virtualnog okruzenja (.venv)
-if exist "%~dp0.venv\Scripts\python.exe" (
-    set "PY_CMD=%~dp0.venv\Scripts\python.exe"
-) else if exist "%~dp0..\.venv\Scripts\python.exe" (
-    set "PY_CMD=%~dp0..\.venv\Scripts\python.exe"
+:: Pronadi Python: ugradeni runtime, .venv ili sistemski
+if exist "python\python.exe" (
+    set "PY_CMD=python\python.exe"
+) else if exist ".venv\Scripts\python.exe" (
+    set "PY_CMD=.venv\Scripts\python.exe"
 ) else (
     set "PY_CMD=python"
 )
@@ -26,11 +26,7 @@ echo   [R]           - Osvjezi bazu osoba
 echo   [SPACE]       - Zamrzni / nastavi sliku
 echo.
 
-if exist "run_live_cam.py" (
-    "%PY_CMD%" run_live_cam.py
-) else if exist "src\live_cam.py" (
-    "%PY_CMD%" src\live_cam.py
-)
+"%PY_CMD%" "src\live_cam.py"
 
 if errorlevel 1 (
     echo.

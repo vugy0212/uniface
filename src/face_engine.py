@@ -1,6 +1,12 @@
 import os
 import cv2
 import numpy as np
+
+# Use local models directory if present (for self-contained / portable installs)
+_local_models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+if os.path.isdir(_local_models_dir):
+    os.environ["UNIFACE_CACHE_DIR"] = _local_models_dir
+
 from uniface import FaceAnalyzer, RetinaFace, ArcFace, FairFace
 
 _analyzer_with_attr = None
