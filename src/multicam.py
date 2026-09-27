@@ -249,7 +249,7 @@ def run_multicam_grid(
     # 1. Initialize Face Index
     embeddings = db.get_all_embeddings()
     face_idx = face_engine.FaceIndex(embeddings)
-    print(f"[INFO] Baza lica ucitana: {len(face_idx.persons)} osoba, {len(face_idx.embeddings)} vektora.")
+    print(f"[INFO] Baza lica ucitana: {len(face_idx.person_ids)} osoba, {face_idx.total_samples} vektora.")
 
     # 2. Filter active cameras and start background workers
     active_configs = [c for c in camera_configs if c.get("enabled", True) and str(c.get("source", "")).strip()]
