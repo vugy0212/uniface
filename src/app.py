@@ -1345,7 +1345,7 @@ def handle_start_photo_sorting(
     enable_group: bool,
     group_min_faces: float,
     enable_noface: bool,
-    enable_other_guests: bool,
+    enable_unregistered: bool,
     resolution_mode: str
 ):
     """Pokreće sortiranje i stream-a napredak u Gradio UI."""
@@ -1402,7 +1402,7 @@ def handle_start_photo_sorting(
         enable_group_folder=bool(enable_group),
         enable_combo_folder=bool(enable_combo),
         enable_no_face_folder=bool(enable_noface),
-        enable_other_guests_folder=bool(enable_other_guests),
+        enable_unregistered_folder=bool(enable_unregistered),
         max_det_dim=max_dim,
         device="CPU"
     )
@@ -3020,12 +3020,12 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
                         backup_import_status = gr.Markdown("")
 
-        # ------------------ TAB 6: EVENT & VJENČANI SORTER FOTOGRAFIJA ------------------
-        with gr.TabItem("📸 Event & Vjenčani Sorter") as tab_photo_sorter:
+        # ------------------ TAB 6: PAMETNI SORTER FOTOGRAFIJA ------------------
+        with gr.TabItem("📸 Pametni Sorter Fotografija") as tab_photo_sorter:
             gr.Markdown(
                 """
-                ## 📸 Event & Vjenčani Sorter — Automatizirano sortiranje fotografija
-                *UniFace Studio modul za fotografe i event agencije: u nekoliko sekundi automatski razvrstava tisuće fotografija (vjenčanja, sportski maratoni, konferencije) po mapama prepoznatih osoba uz instantno povezivanje (Windows Hardlink - 0 MB dodatnog zauzeća diska).*
+                ## 📸 Pametni Sorter Fotografija — Automatsko razvrstavanje po osobama
+                *Univerzalni biometrijski modul za automatsko razvrstavanje velikih mapa i arhiva fotografija (događaji, konferencije, natjecanja, portreti, poslovni i privatni albumi) po prepoznatim osobama uz instantno povezivanje (Windows Hardlink - 0 MB dodatnog zauzeća diska).*
                 """
             )
             
@@ -3035,7 +3035,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         gr.Markdown("### 📂 Odabir mapa i ulaznih fotografija")
                         with gr.Row():
                             sorter_input_folder = gr.Textbox(
-                                label="📁 Izvorna mapa s fotografijama (npr. D:\\Vjencanja\\Marko_Ana_2026)",
+                                label="📁 Izvorna mapa s fotografijama (npr. D:\\Fotografije\\Event_2026)",
                                 placeholder="Upišite ili zalijepite punu putanju do mape s fotografijama...",
                                 scale=4
                             )
@@ -3046,7 +3046,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         sorter_output_folder = gr.Textbox(
                             label="📂 Odredišna mapa za sortirane fotografije",
                             placeholder="Zadano: <izvorna_mapa>_SORTIRANO",
-                            info="Mape za prepoznate osobe, mladence, grupe i detalje kreirat će se unutar ove lokacije."
+                            info="Mape za prepoznate osobe, zajedničke kadrove, grupe i fotografije bez lica kreirat će se unutar ove lokacije."
                         )
 
                     with gr.Group():
@@ -3056,7 +3056,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             choices=get_sorter_person_choices(),
                             multiselect=True,
                             interactive=True,
-                            info="Možete odabrati npr. samo mladu i mladoženju ili sortirati sve osobe registrirane u bazi."
+                            info="Odaberite specifične osobe koje želite izdvojiti ili ostavite prazno za automatsko sortiranje svih osoba iz baze."
                         )
                         
                         with gr.Row():
@@ -3093,11 +3093,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         gr.Markdown("#### 🏷️ Pametna organizacija posebnih mapa")
                         with gr.Row():
                             sorter_enable_combo = gr.Checkbox(
-                                label="👰🤵 Kreiraj mapu '01_Mladenci_Skupa' (kad je 2+ ciljanih osoba na istoj slici)",
+                                label="👥 Kreiraj mapu 'Zajedno_Ciljane_Osobe' (kad je 2+ ciljanih osoba na istoj slici)",
                                 value=True
                             )
                             sorter_enable_group = gr.Checkbox(
-                                label="👥 Kreiraj mapu 'Grupne_Fotografije'",
+                                label="👨‍👩‍👧‍👦 Kreiraj mapu 'Grupne_Fotografije'",
                                 value=True
                             )
                             sorter_group_min = gr.Number(
@@ -3108,11 +3108,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             )
                         with gr.Row():
                             sorter_enable_noface = gr.Checkbox(
-                                label="🖼️ Izdvoji fotografije bez lica u 'Bez_Lica_Detalji' (sala, hrana, prstenje)",
+                                label="🖼️ Izdvoji fotografije bez lica u 'Fotografije_Bez_Lica' (objekti, arhitektura, pejzaži, detalji)",
                                 value=True
                             )
-                            sorter_enable_other_guests = gr.Checkbox(
-                                label="👤 Izdvoji lica koja nisu u bazi u 'Ostali_Gosti'",
+                            sorter_enable_unregistered = gr.Checkbox(
+                                label="👤 Izdvoji osobe koje nisu u bazi u 'Neregistrirana_Lica'",
                                 value=False
                             )
 
@@ -3525,7 +3525,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             sorter_enable_group,
             sorter_group_min,
             sorter_enable_noface,
-            sorter_enable_other_guests,
+            sorter_enable_unregistered,
             sorter_resolution
         ],
         outputs=[

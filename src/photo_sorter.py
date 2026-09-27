@@ -20,7 +20,7 @@ SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif
 
 class PhotoSorter:
     """
-    Automatski razvrstava i sortira velike mape fotografija (npr. 4.000+ vjenčanih ili event slika)
+    Automatski razvrstava i sortira velike mape fotografija (događaji, konferencije, natjecanja, albumi, arhive)
     prema prepoznatim osobama iz biometrijske baze.
     """
     def __init__(
@@ -34,7 +34,8 @@ class PhotoSorter:
         enable_group_folder: bool = True,
         enable_combo_folder: bool = True,
         enable_no_face_folder: bool = True,
-        enable_other_guests_folder: bool = False,
+        enable_unregistered_folder: bool = False,
+        enable_other_guests_folder: Optional[bool] = None,
         max_det_dim: int = 1600,
         device: str = "CPU"
     ):
@@ -47,7 +48,10 @@ class PhotoSorter:
         self.enable_group_folder = enable_group_folder
         self.enable_combo_folder = enable_combo_folder
         self.enable_no_face_folder = enable_no_face_folder
-        self.enable_other_guests_folder = enable_other_guests_folder
+        if enable_other_guests_folder is not None:
+            self.enable_unregistered_folder = enable_other_guests_folder
+        else:
+            self.enable_unregistered_folder = enable_unregistered_folder
         self.max_det_dim = max_det_dim
         self.device = device
 
@@ -205,17 +209,17 @@ class PhotoSorter:
                     safe_pname = "".join(c for c in p_name if c.isalnum() or c in (" ", "_", "-")).strip()
                     assigned_folders.add(os.path.join(self.output_dir, f"Osoba_{safe_pname}"))
 
-                # Ako je prepoznato više ciljanih osoba na istoj slici (npr. mladenci skupa)
+                # Ako je prepoznato više ciljanih osoba na istoj slici
                 if self.enable_combo_folder and len(photo_matched_persons) >= 2:
-                    assigned_folders.add(os.path.join(self.output_dir, "01_Mladenci_Skupa"))
+                    assigned_folders.add(os.path.join(self.output_dir, "Zajedno_Ciljane_Osobe"))
 
             else:
                 if face_count == 0:
                     if self.enable_no_face_folder:
-                        assigned_folders.add(os.path.join(self.output_dir, "Bez_Lica_Detalji"))
+                        assigned_folders.add(os.path.join(self.output_dir, "Fotografije_Bez_Lica"))
                 else:
-                    if self.enable_other_guests_folder:
-                        assigned_folders.add(os.path.join(self.output_dir, "Ostali_Gosti"))
+                    if self.enable_unregistered_folder:
+                        assigned_folders.add(os.path.join(self.output_dir, "Neregistrirana_Lica"))
 
             # Grupne fotografije (ako ima >= N lica)
             if self.enable_group_folder and face_count >= self.group_min_faces:
