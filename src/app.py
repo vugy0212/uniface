@@ -18,6 +18,7 @@ import config
 import photo_sorter
 import queue
 import threading
+import shutil
 from image_utils import imread_unicode, imwrite_unicode, save_image_dedup
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1571,7 +1572,7 @@ def handle_start_photo_sorting(
         yield (
             last_status,
             last_stats,
-            None,
+            gr.update(visible=False),
             gr.update(interactive=False),
             gr.update(interactive=True),
             gr.update(interactive=False)
@@ -1586,7 +1587,7 @@ def handle_start_photo_sorting(
         yield (
             f"❌ **Došlo je do greške tijekom obrade:** {err}",
             last_stats,
-            None,
+            gr.update(visible=False),
             gr.update(interactive=True),
             gr.update(interactive=False),
             gr.update(interactive=True)
@@ -1597,7 +1598,7 @@ def handle_start_photo_sorting(
         yield (
             f"⚠️ **Prekid:** {res.get('message', 'Nepoznata greška')}",
             last_stats,
-            None,
+            gr.update(visible=False),
             gr.update(interactive=True),
             gr.update(interactive=False),
             gr.update(interactive=False)
@@ -1629,7 +1630,15 @@ def handle_start_photo_sorting(
     )
 
     report_f = res.get("report_path")
-    csv_update = gr.update(value=report_f, visible=bool(report_f and os.path.exists(report_f)))
+    csv_local_path = None
+    if report_f and os.path.exists(report_f):
+        try:
+            csv_local_path = os.path.join(DATA_DIR, "zadnji_izvjestaj_sortiranja.csv")
+            shutil.copy2(report_f, csv_local_path)
+        except Exception:
+            csv_local_path = None
+
+    csv_update = gr.update(value=csv_local_path, visible=bool(csv_local_path and os.path.exists(csv_local_path)))
 
     yield (
         fin_status,
