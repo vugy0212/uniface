@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import gradio as gr
 from PIL import Image
+from typing import Optional, List, Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -14,6 +15,9 @@ import face_engine
 import hardware
 import backup
 import config
+import photo_sorter
+import queue
+import threading
 from image_utils import imread_unicode, imwrite_unicode, save_image_dedup
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1293,6 +1297,262 @@ def handle_export_events_csv():
                 ev.get("snapshot_path", "")
             ])
     return gr.update(value=export_path, visible=True), f"✅ Uspješno izvezeno {len(events)} prolazaka u CSV!"
+
+# ---------------- EVENT & VJENČANI SORTER HELPERS ----------------
+active_sorter_instance: Optional[photo_sorter.PhotoSorter] = None
+
+def get_sorter_person_choices():
+    """Vraća listu imena osoba iz baze za odabir u sorteru."""
+    try:
+        persons = db.get_all_persons()
+        return [f"{p['name']} (ID: {p['id']})" for p in persons]
+    except Exception:
+        return []
+
+def handle_validate_input_folder(input_folder_path: str):
+    """Provjerava postojanje ulazne mape i broji podržane fotografije."""
+    path = (input_folder_path or "").strip().strip('"\'')
+    if not path:
+        return "⚠️ Unesite putanju do mape s fotografijama.", ""
+    if not os.path.isdir(path):
+        return f"❌ Mapa ne postoji ili nije dostupna: `{path}`", ""
+    
+    files = []
+    for root, _, filenames in os.walk(path):
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in photo_sorter.SUPPORTED_IMAGE_EXTS:
+                files.append(os.path.join(root, fn))
+    
+    count = len(files)
+    if count == 0:
+        return f"⚠️ U mapi `{path}` nije pronađena niti jedna slika (JPG, PNG, WebP...).", ""
+    
+    default_out = os.path.join(os.path.dirname(os.path.abspath(path)), f"{os.path.basename(os.path.abspath(path))}_SORTIRANO")
+    return (
+        f"✅ **Pronađeno {count} fotografija** spremnih za analizu i sortiranje.\n"
+        f"📁 Ulazna lokacija: `{os.path.abspath(path)}`",
+        default_out
+    )
+
+def handle_start_photo_sorting(
+    input_folder: str,
+    output_folder: str,
+    target_person_labels: list,
+    similarity_thresh: float,
+    action_mode: str,
+    enable_combo: bool,
+    enable_group: bool,
+    group_min_faces: float,
+    enable_noface: bool,
+    enable_other_guests: bool,
+    resolution_mode: str
+):
+    """Pokreće sortiranje i stream-a napredak u Gradio UI."""
+    global active_sorter_instance
+
+    in_dir = (input_folder or "").strip().strip('"\'')
+    out_dir = (output_folder or "").strip().strip('"\'')
+
+    if not in_dir or not os.path.isdir(in_dir):
+        yield (
+            "❌ **Greška:** Ulazna mapa ne postoji ili nije dostupna!",
+            "",
+            None,
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            gr.update(interactive=False)
+        )
+        return
+
+    if not out_dir:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(in_dir)), f"{os.path.basename(os.path.abspath(in_dir))}_SORTIRANO")
+
+    target_ids = []
+    if target_person_labels:
+        for lbl in target_person_labels:
+            if "(ID: " in lbl:
+                try:
+                    pid = int(lbl.split("(ID: ")[-1].rstrip(")"))
+                    target_ids.append(pid)
+                except Exception:
+                    pass
+
+    if "hardlink" in (action_mode or "").lower():
+        file_action = "hardlink"
+    elif "premjesti" in (action_mode or "").lower() or "move" in (action_mode or "").lower():
+        file_action = "move"
+    else:
+        file_action = "copy"
+
+    if "1280" in (resolution_mode or ""):
+        max_dim = 1280
+    elif "2048" in (resolution_mode or ""):
+        max_dim = 2048
+    else:
+        max_dim = 1600
+
+    sorter = photo_sorter.PhotoSorter(
+        input_dir=in_dir,
+        output_dir=out_dir,
+        target_person_ids=target_ids if target_ids else None,
+        threshold=float(similarity_thresh),
+        file_action=file_action,
+        group_min_faces=int(group_min_faces or 4),
+        enable_group_folder=bool(enable_group),
+        enable_combo_folder=bool(enable_combo),
+        enable_no_face_folder=bool(enable_noface),
+        enable_other_guests_folder=bool(enable_other_guests),
+        max_det_dim=max_dim,
+        device="CPU"
+    )
+    active_sorter_instance = sorter
+
+    prog_q = queue.Queue()
+
+    def progress_cb(data):
+        prog_q.put(data)
+
+    worker_res = {}
+    def worker():
+        try:
+            worker_res["result"] = sorter.run(progress_callback=progress_cb)
+        except Exception as e:
+            worker_res["error"] = str(e)
+        finally:
+            prog_q.put({"__done__": True})
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    last_status = "🚀 Inicijalizacija biometrijskog modela i indeksiranje uzoraka..."
+    last_stats = ""
+
+    while t.is_alive() or not prog_q.empty():
+        try:
+            item = prog_q.get(timeout=0.25)
+        except queue.Empty:
+            continue
+
+        if "__done__" in item:
+            break
+
+        cur = item.get("current", 0)
+        tot = item.get("total", 0)
+        pct = item.get("percent", 0.0)
+        fps = item.get("fps", 0.0)
+        eta = item.get("eta_sec", 0)
+        matched_photos = item.get("matched_photos", 0)
+        total_faces = item.get("total_faces", 0)
+        cur_file = item.get("current_file", "")
+        p_stats = item.get("stats_by_person", {})
+
+        eta_str = f"{eta // 60}m {eta % 60}s" if eta >= 60 else f"{eta}s"
+        last_status = (
+            f"🔄 **Obrada u tijeku: {cur} / {tot} slika ({pct}%)** &nbsp;|&nbsp; "
+            f"⚡ **Brzina:** `{fps:.1f} slika/s` &nbsp;|&nbsp; ⏳ **Preostalo:** `{eta_str}`\n\n"
+            f"📄 Trenutna fotografija: `{cur_file}`"
+        )
+
+        breakdown_lines = [f"* **{pname}:** `{cnt}` fotografija" for pname, cnt in sorted(p_stats.items(), key=lambda x: x[1], reverse=True)]
+        breakdown_text = "\n".join(breakdown_lines) if breakdown_lines else "*Čekanje na prva prepoznavanja lica...*"
+
+        last_stats = (
+            f"### 📊 Statistika u stvarnom vremenu\n"
+            f"* **Ukupno analizirano fotografija:** `{cur} / {tot}`\n"
+            f"* **Fotografija s prepoznatim osobama:** `{matched_photos}`\n"
+            f"* **Ukupno pronađeno lica:** `{total_faces}`\n\n"
+            f"#### 👥 Razvrstano po mapama osoba:\n{breakdown_text}"
+        )
+
+        yield (
+            last_status,
+            last_stats,
+            None,
+            gr.update(interactive=False),
+            gr.update(interactive=True),
+            gr.update(interactive=False)
+        )
+
+    t.join()
+
+    res = worker_res.get("result", {})
+    err = worker_res.get("error", None)
+
+    if err:
+        yield (
+            f"❌ **Došlo je do greške tijekom obrade:** {err}",
+            last_stats,
+            None,
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            gr.update(interactive=True)
+        )
+        return
+
+    if res.get("status") == "error":
+        yield (
+            f"⚠️ **Prekid:** {res.get('message', 'Nepoznata greška')}",
+            last_stats,
+            None,
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            gr.update(interactive=False)
+        )
+        return
+
+    is_cancelled = (res.get("status") == "cancelled")
+    status_icon = "🛑" if is_cancelled else "✅"
+    status_title = "Sortiranje je prekinuto od strane korisnika" if is_cancelled else "Sortiranje je uspješno završeno!"
+
+    fin_status = (
+        f"{status_icon} **{status_title}**\n\n"
+        f"* **Obrađeno fotografija:** `{res.get('processed', 0)}` od `{res.get('total_files', 0)}`\n"
+        f"* **Fotografija s prepoznatim osobama:** `{res.get('matched_photos', 0)}`\n"
+        f"* **Detektirano lica ukupno:** `{res.get('total_faces', 0)}`\n"
+        f"* **Prosječna brzina:** `{res.get('avg_fps', 0.0)} slika/s` (ukupno vrijeme: `{res.get('elapsed_sec', 0)}s`)\n"
+        f"* 📂 **Odredišna mapa:** `{out_dir}`"
+    )
+
+    p_stats = res.get("stats_by_person", {})
+    breakdown_lines = [f"* **{pname}:** `{cnt}` fotografija" for pname, cnt in sorted(p_stats.items(), key=lambda x: x[1], reverse=True)]
+    breakdown_text = "\n".join(breakdown_lines) if breakdown_lines else "*Nema prepoznatih osoba s odabranim pragom točnosti.*"
+
+    fin_stats = (
+        f"### 🏆 Završni rezultati sortiranja\n"
+        f"* **Odredišna mapa:** `{out_dir}`\n"
+        f"* **Način prijenosa:** `{file_action.upper()}`\n\n"
+        f"#### 👥 Ukupno slika po mapama osoba:\n{breakdown_text}"
+    )
+
+    report_f = res.get("report_path")
+    csv_update = gr.update(value=report_f, visible=bool(report_f and os.path.exists(report_f)))
+
+    yield (
+        fin_status,
+        fin_stats,
+        csv_update,
+        gr.update(interactive=True),
+        gr.update(interactive=False),
+        gr.update(interactive=True)
+    )
+
+def handle_cancel_photo_sorting():
+    global active_sorter_instance
+    if active_sorter_instance and active_sorter_instance.is_running:
+        active_sorter_instance.cancel()
+        return "⏳ Zaustavljanje sortiranja u tijeku... Molimo pričekajte trenutnu datoteku."
+    return "ℹ️ Nema aktivnog procesa sortiranja."
+
+def handle_open_sorter_folder(folder_path: str):
+    path = (folder_path or "").strip().strip('"\'')
+    if path and os.path.isdir(path):
+        config.open_folder_in_explorer(path)
+        return f"📂 Otvorena mapa u Exploreru: `{path}`"
+    elif path and os.path.exists(os.path.dirname(path)):
+        config.open_folder_in_explorer(os.path.dirname(path))
+        return f"📂 Otvorena mapa u Exploreru: `{os.path.dirname(path)}`"
+    return "⚠️ Mapa još ne postoji."
 
 # ---------------- GRADIO UI THEME & CYBER STYLING ----------------
 CUSTOM_CSS = """
@@ -2760,6 +3020,114 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
                         backup_import_status = gr.Markdown("")
 
+        # ------------------ TAB 6: EVENT & VJENČANI SORTER FOTOGRAFIJA ------------------
+        with gr.TabItem("📸 Event & Vjenčani Sorter") as tab_photo_sorter:
+            gr.Markdown(
+                """
+                ## 📸 Event & Vjenčani Sorter — Automatizirano sortiranje fotografija
+                *UniFace Studio modul za fotografe i event agencije: u nekoliko sekundi automatski razvrstava tisuće fotografija (vjenčanja, sportski maratoni, konferencije) po mapama prepoznatih osoba uz instantno povezivanje (Windows Hardlink - 0 MB dodatnog zauzeća diska).*
+                """
+            )
+            
+            with gr.Row():
+                with gr.Column(scale=5):
+                    with gr.Group():
+                        gr.Markdown("### 📂 Odabir mapa i ulaznih fotografija")
+                        with gr.Row():
+                            sorter_input_folder = gr.Textbox(
+                                label="📁 Izvorna mapa s fotografijama (npr. D:\\Vjencanja\\Marko_Ana_2026)",
+                                placeholder="Upišite ili zalijepite punu putanju do mape s fotografijama...",
+                                scale=4
+                            )
+                            btn_check_input_folder = gr.Button("🔍 Provjeri mapu", scale=1, variant="secondary")
+                        
+                        sorter_folder_info_md = gr.Markdown("💡 *Upišite putanju do mape i kliknite 'Provjeri mapu' za provjeru broja slika.*")
+                        
+                        sorter_output_folder = gr.Textbox(
+                            label="📂 Odredišna mapa za sortirane fotografije",
+                            placeholder="Zadano: <izvorna_mapa>_SORTIRANO",
+                            info="Mape za prepoznate osobe, mladence, grupe i detalje kreirat će se unutar ove lokacije."
+                        )
+
+                    with gr.Group():
+                        gr.Markdown("### ⚙️ Postavke biometrijskog razvrstavanja")
+                        sorter_target_persons = gr.Dropdown(
+                            label="👥 Odaberite ciljane osobe za sortiranje (ostavite prazno za sve osobe iz baze)",
+                            choices=get_sorter_person_choices(),
+                            multiselect=True,
+                            interactive=True,
+                            info="Možete odabrati npr. samo mladu i mladoženju ili sortirati sve osobe registrirane u bazi."
+                        )
+                        
+                        with gr.Row():
+                            sorter_similarity = gr.Slider(
+                                minimum=0.35,
+                                maximum=0.75,
+                                value=0.48,
+                                step=0.01,
+                                label="🎯 Biometrijski prag sličnosti (Threshold)",
+                                info="0.48 je optimalna točnost. Niže = više ulova pri lošijem kutu; Više = maksimalna sigurnost."
+                            )
+                            sorter_resolution = gr.Dropdown(
+                                label="⚡ Brzina / Rezolucija analize",
+                                choices=[
+                                    "Brzo (1280px - za starija računala)",
+                                    "Uravnoteženo (1600px - preporučeno)",
+                                    "Maksimalna točnost (2048px - za velike grupne kadrove)"
+                                ],
+                                value="Uravnoteženo (1600px - preporučeno)",
+                                info="Originalna datoteka se nikada ne dira niti komprimira."
+                            )
+
+                        sorter_action_mode = gr.Radio(
+                            label="💾 Način prijenosa datoteka u sortirane mape",
+                            choices=[
+                                "⚡ Windows Hardlink (preporučeno - instantno, troši 0 MB dodatnog diska)",
+                                "📋 Kopiraj datoteke (stvara fizičke kopije na disku)",
+                                "🚚 Premjesti datoteke (Move)"
+                            ],
+                            value="⚡ Windows Hardlink (preporučeno - instantno, troši 0 MB dodatnog diska)",
+                            info="Hardlink omogućuje da slika bude u više mapa istovremeno bez trošenja dodatnih gigabajta!"
+                        )
+
+                        gr.Markdown("#### 🏷️ Pametna organizacija posebnih mapa")
+                        with gr.Row():
+                            sorter_enable_combo = gr.Checkbox(
+                                label="👰🤵 Kreiraj mapu '01_Mladenci_Skupa' (kad je 2+ ciljanih osoba na istoj slici)",
+                                value=True
+                            )
+                            sorter_enable_group = gr.Checkbox(
+                                label="👥 Kreiraj mapu 'Grupne_Fotografije'",
+                                value=True
+                            )
+                            sorter_group_min = gr.Number(
+                                label="Minimalno lica za grupu",
+                                value=4,
+                                precision=0,
+                                scale=1
+                            )
+                        with gr.Row():
+                            sorter_enable_noface = gr.Checkbox(
+                                label="🖼️ Izdvoji fotografije bez lica u 'Bez_Lica_Detalji' (sala, hrana, prstenje)",
+                                value=True
+                            )
+                            sorter_enable_other_guests = gr.Checkbox(
+                                label="👤 Izdvoji lica koja nisu u bazi u 'Ostali_Gosti'",
+                                value=False
+                            )
+
+                    with gr.Row():
+                        btn_start_sorter = gr.Button("🚀 Pokreni automatsko sortiranje", variant="primary", scale=3)
+                        btn_cancel_sorter = gr.Button("🛑 Zaustavi obradu", variant="stop", scale=1, interactive=False)
+                        btn_open_sorter_dir = gr.Button("📂 Otvori mapu u Exploreru", variant="secondary", scale=2)
+
+                with gr.Column(scale=4):
+                    with gr.Group():
+                        gr.Markdown("### 📈 Status obrade i metrike u stvarnom vremenu")
+                        sorter_status_md = gr.Markdown("⏳ *Sustav je spreman. Odaberite mapu s fotografijama i pokrenite sortiranje.*")
+                        sorter_stats_breakdown_md = gr.Markdown("")
+                        sorter_export_csv_file = gr.File(label="📥 Preuzmi CSV izvještaj sortiranja (Excel)", visible=False)
+
 
     # ------------------ EVENT HANDLERS ------------------
     batch_naming_mode.change(
@@ -3136,6 +3504,56 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             existing_person_picker,
             system_info_md
         ]
+    )
+
+    # ------------------ EVENT HANDLERS: TAB 6 PHOTO SORTER ------------------
+    btn_check_input_folder.click(
+        fn=handle_validate_input_folder,
+        inputs=[sorter_input_folder],
+        outputs=[sorter_folder_info_md, sorter_output_folder]
+    )
+
+    btn_start_sorter.click(
+        fn=handle_start_photo_sorting,
+        inputs=[
+            sorter_input_folder,
+            sorter_output_folder,
+            sorter_target_persons,
+            sorter_similarity,
+            sorter_action_mode,
+            sorter_enable_combo,
+            sorter_enable_group,
+            sorter_group_min,
+            sorter_enable_noface,
+            sorter_enable_other_guests,
+            sorter_resolution
+        ],
+        outputs=[
+            sorter_status_md,
+            sorter_stats_breakdown_md,
+            sorter_export_csv_file,
+            btn_start_sorter,
+            btn_cancel_sorter,
+            btn_open_sorter_dir
+        ]
+    )
+
+    btn_cancel_sorter.click(
+        fn=handle_cancel_photo_sorting,
+        inputs=[],
+        outputs=[sorter_status_md]
+    )
+
+    btn_open_sorter_dir.click(
+        fn=handle_open_sorter_folder,
+        inputs=[sorter_output_folder],
+        outputs=[sorter_status_md]
+    )
+
+    tab_photo_sorter.select(
+        fn=lambda: gr.update(choices=get_sorter_person_choices()),
+        inputs=[],
+        outputs=[sorter_target_persons]
     )
 
     demo.load(
