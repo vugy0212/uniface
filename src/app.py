@@ -2847,6 +2847,33 @@ input[type="range"] {
     margin-bottom: 8px !important;
     font-weight: 600 !important;
 }
+
+/* Retention Radio Group */
+.retention-radio-group .wrap {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+}
+
+.retention-radio-group label {
+    background: rgba(13, 20, 36, 0.7) !important;
+    border: 1px solid rgba(16, 185, 129, 0.2) !important;
+    border-radius: 8px !important;
+    padding: 7px 12px !important;
+    transition: all 0.18s ease !important;
+    cursor: pointer !important;
+}
+
+.retention-radio-group label:hover {
+    border-color: rgba(16, 185, 129, 0.5) !important;
+    background: rgba(16, 185, 129, 0.08) !important;
+}
+
+.retention-radio-group label:has(input:checked) {
+    background: rgba(16, 185, 129, 0.18) !important;
+    border-color: rgba(16, 185, 129, 0.6) !important;
+    color: #34d399 !important;
+}
 """
 
 HEAD_DARK_JS = """
@@ -3711,16 +3738,17 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             init_choice = ret_choices[4]
 
                         with gr.Row():
-                            retention_period_dropdown = gr.Dropdown(
-                                label="Politika zadržavanja podataka",
+                            retention_period_radio = gr.Radio(
+                                label="Politika zadržavanja podataka (Odaberite rok automatske rotacije)",
                                 choices=ret_choices,
                                 value=init_choice,
                                 interactive=True,
-                                allow_custom_value=False,
+                                elem_classes=["retention-radio-group"],
                                 scale=3
                             )
-                            btn_run_retention = gr.Button("🧹 Očisti stare podatke odmah", variant="secondary", scale=2, elem_classes=["btn-cyber-primary"])
-                        retention_status_md = gr.Markdown("")
+                            with gr.Column(scale=2):
+                                btn_run_retention = gr.Button("🧹 Očisti stare podatke odmah", variant="secondary", elem_classes=["btn-cyber-primary"])
+                                retention_status_md = gr.Markdown("")
 
             gr.Markdown("---")
             with gr.Accordion("⚖️ Pravne napomene, licence i regulatorna usklađenost (GDPR & EU AI Act)", open=True, elem_classes=["cyber-accordion"]):
@@ -4224,15 +4252,15 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         ]
     )
 
-    retention_period_dropdown.change(
+    retention_period_radio.change(
         fn=handle_retention_period_change,
-        inputs=[retention_period_dropdown],
+        inputs=[retention_period_radio],
         outputs=[retention_status_md]
     )
 
     btn_run_retention.click(
         fn=handle_run_retention_cleanup,
-        inputs=[retention_period_dropdown],
+        inputs=[retention_period_radio],
         outputs=[retention_status_md, system_info_md]
     )
 
