@@ -47,14 +47,26 @@ def get_available_providers() -> list[str]:
     available = ort.get_available_providers()
     providers = []
 
-    # Priority order: CoreML > CUDA > CPU
+    # Priority order: CUDA > DirectML > OpenVINO > CoreML > ROCm > CPU
+    if 'CUDAExecutionProvider' in available:
+        providers.append('CUDAExecutionProvider')
+        Logger.info('CUDA acceleration enabled (NVIDIA GPU)')
+
+    if 'DmlExecutionProvider' in available:
+        providers.append('DmlExecutionProvider')
+        Logger.info('DirectML acceleration enabled (DirectX 12 GPU / NPU)')
+
+    if 'OpenVINOExecutionProvider' in available:
+        providers.append('OpenVINOExecutionProvider')
+        Logger.info('OpenVINO acceleration enabled (Intel iGPU / NPU)')
+
     if 'CoreMLExecutionProvider' in available:
         providers.append('CoreMLExecutionProvider')
         Logger.info('CoreML acceleration enabled (Apple Silicon)')
 
-    if 'CUDAExecutionProvider' in available:
-        providers.append('CUDAExecutionProvider')
-        Logger.info('CUDA acceleration enabled (NVIDIA GPU)')
+    if 'ROCMExecutionProvider' in available:
+        providers.append('ROCMExecutionProvider')
+        Logger.info('ROCm acceleration enabled (AMD GPU)')
 
     # CPU is always available as fallback
     providers.append('CPUExecutionProvider')

@@ -37,7 +37,7 @@ class PhotoSorter:
         enable_unregistered_folder: bool = False,
         enable_other_guests_folder: Optional[bool] = None,
         max_det_dim: int = 1600,
-        device: str = "CPU"
+        device: str = "AUTO"
     ):
         self.input_dir = os.path.abspath(input_dir)
         self.output_dir = os.path.abspath(output_dir)

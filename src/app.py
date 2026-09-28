@@ -1010,7 +1010,7 @@ def handle_import_backup(file_obj):
     return msg, table_view, stats_view, gr.update(choices=choices, value=None), gr.update(choices=choices, value=None), sys_report
 
 def handle_refresh_sysinfo():
-    return hardware.get_system_report_markdown(DATA_DIR)
+    return hardware.get_hardware_acceleration_badge_html(), hardware.get_system_report_markdown(DATA_DIR)
 
 def _parse_retention_days(label_str: str) -> int:
     if not label_str or "Trajno" in label_str:
@@ -1667,7 +1667,7 @@ def handle_start_photo_sorting(
         enable_no_face_folder=bool(enable_noface),
         enable_unregistered_folder=bool(enable_unregistered),
         max_det_dim=max_dim,
-        device="CPU"
+        device="AUTO"
     )
     active_sorter_instance = sorter
 
@@ -3683,6 +3683,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         with gr.TabItem("ℹ️ O Sustavu i Sigurnosna Kopija"):
             with gr.Row():
                 with gr.Column(scale=1):
+                    hw_accel_badge = gr.HTML(hardware.get_hardware_acceleration_badge_html())
                     system_info_md = gr.Markdown(hardware.get_system_report_markdown(DATA_DIR))
                     btn_refresh_sysinfo = gr.Button("🔄 Osvježi podatke o sustavu", size="sm")
                     
@@ -4231,7 +4232,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
     btn_refresh_sysinfo.click(
         fn=handle_refresh_sysinfo,
-        outputs=[system_info_md]
+        outputs=[hw_accel_badge, system_info_md]
     )
 
     btn_export_backup.click(

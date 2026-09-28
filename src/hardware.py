@@ -37,19 +37,59 @@ def get_gpus() -> list[str]:
     except Exception:
         return ["Generički video kontroler"]
 
-def get_onnx_acceleration_status() -> tuple[str, str]:
-    """Checks ONNX Runtime available execution providers."""
+def get_available_onnx_providers() -> list[str]:
+    """Returns raw list of available ONNX Runtime execution providers."""
     try:
         import onnxruntime as ort
-        providers = ort.get_available_providers()
+        return ort.get_available_providers()
+    except Exception:
+        return ["CPUExecutionProvider"]
+
+def get_onnx_acceleration_status() -> tuple[str, str]:
+    """Checks ONNX Runtime available execution providers and hardware capability."""
+    try:
+        providers = get_available_onnx_providers()
         if "CUDAExecutionProvider" in providers:
-            return "NVIDIA CUDA / TensorRT", "⚡ Hardversko ubrzanje (GPU) aktivno"
+            return "NVIDIA CUDA / TensorRT", "⚡ Hardversko ubrzanje (NVIDIA GPU) aktivno"
+        elif "DmlExecutionProvider" in providers:
+            return "DirectML (DirectX 12)", "⚡ Hardversko ubrzanje (Intel / AMD / NVIDIA GPU / NPU) aktivno"
+        elif "OpenVINOExecutionProvider" in providers:
+            return "Intel OpenVINO", "⚡ Hardversko ubrzanje (Intel iGPU / NPU) aktivno"
         elif "ROCMExecutionProvider" in providers:
-            return "AMD ROCm", "⚡ Hardversko ubrzanje (GPU) aktivno"
+            return "AMD ROCm", "⚡ Hardversko ubrzanje (AMD GPU) aktivno"
+        elif "CoreMLExecutionProvider" in providers:
+            return "Apple Silicon CoreML", "⚡ Hardversko ubrzanje (Neural Engine / GPU) aktivno"
         else:
             return "CPU (OpenMP / AVX2)", "⚙️ CPU izvođenje"
     except Exception as e:
         return "CPU", f"Automatski ({e})"
+
+def get_hardware_acceleration_badge_html() -> str:
+    """Generates a responsive cyber-themed HTML status badge for the UI."""
+    accel_type, accel_status = get_onnx_acceleration_status()
+    is_hw = "⚡" in accel_status
+    
+    badge_bg = "rgba(16, 185, 129, 0.12)" if is_hw else "rgba(100, 116, 139, 0.15)"
+    badge_border = "rgba(16, 185, 129, 0.4)" if is_hw else "rgba(100, 116, 139, 0.3)"
+    text_color = "#10b981" if is_hw else "#94a3b8"
+    icon = "⚡" if is_hw else "⚙️"
+    
+    gpus = get_gpus()
+    gpu_label = gpus[0] if gpus and gpus[0] != "Nedostupno" else "Univerzalni hardver"
+
+    return f"""
+    <div style="background:{badge_bg}; border:1px solid {badge_border}; border-radius:10px; padding:10px 16px; display:inline-flex; align-items:center; gap:12px; margin-bottom:12px; box-shadow:0 0 15px rgba(0,0,0,0.3);">
+        <span style="font-size:1.4rem;">{icon}</span>
+        <div>
+            <div style="font-size:0.85rem; font-weight:700; color:{text_color}; letter-spacing:0.5px; text-transform:uppercase;">
+                AI Hardverska Akceleracija: {accel_type}
+            </div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin-top:2px;">
+                Grafički podsustav: <strong style="color:#e2e8f0;">{gpu_label}</strong> &bull; Status: <span style="color:{text_color}; font-weight:600;">{accel_status}</span>
+            </div>
+        </div>
+    </div>
+    """
 
 def get_disk_usage_info(data_dir: str) -> dict:
     """Calculates disk sizes for database, crops, and uploads."""
@@ -83,6 +123,8 @@ def get_system_report_markdown(data_dir: str) -> str:
     cpu_cores = os.cpu_count() or "-"
     os_name = f"{platform.system()} {platform.release()} ({platform.machine()})"
     accel_type, accel_status = get_onnx_acceleration_status()
+    raw_providers = get_available_onnx_providers()
+    providers_str = ", ".join(raw_providers) if raw_providers else "CPUExecutionProvider"
     disk = get_disk_usage_info(data_dir)
 
     md = f"""### 💻 Stvarna hardverska konfiguracija računala (Automatski detektirano)
@@ -90,7 +132,8 @@ def get_system_report_markdown(data_dir: str) -> str:
 * **Radna memorija (RAM):** {ram_str}
 * **Procesor (CPU):** {cpu_cores} logičkih jezgri ({platform.processor() or 'x86_64'})
 * **Operativni sustav:** {os_name}
-* **ONNX Ubrzanje:** {accel_type} — *{accel_status}*
+* **ONNX Ubrzanje:** **{accel_type}** — *{accel_status}*
+* **Detektirani pružatelji (Providers):** `{providers_str}`
 
 ---
 

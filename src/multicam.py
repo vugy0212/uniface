@@ -16,6 +16,7 @@ if APP_DIR not in sys.path:
 import db
 import face_engine
 import config
+import hardware
 from image_utils import imwrite_unicode
 
 DATA_DIR = os.path.join(APP_DIR, "data")
@@ -238,7 +239,7 @@ def run_multicam_grid(
     process_interval: int = 3,
     log_events: bool = False,
     cooldown_sec: int = 30,
-    device: str = "CPU",
+    device: str = "AUTO",
     record_nvr: bool = False,
     segment_duration_sec: int = 300,
     max_storage_gb: float = 20.0
@@ -246,8 +247,10 @@ def run_multicam_grid(
     """
     Main loop for Multi-Camera 2x2 Grid with real-time biometric face recognition and NVR recording.
     """
+    accel_type, accel_status = hardware.get_onnx_acceleration_status()
     print("=========================================================")
     print("      UniFace Multi-Camera 2x2 Grid - Nadzor Uživo")
+    print(f"      [{accel_status} ({accel_type})]")
     print(f"      [Prag: {threshold} | Interval: {process_interval} | Dnevnik: {log_events} | NVR: {record_nvr}]")
     print("=========================================================")
     

@@ -28,6 +28,7 @@ if APP_DIR not in sys.path:
 import db
 import face_engine
 import config
+import hardware
 from image_utils import imwrite_unicode
 from nvr_recorder import get_nvr_manager
 
@@ -227,14 +228,17 @@ def resolve_stream_source(source_input):
         cam_idx = 0
     return cam_idx, f"USB Web Kamera (indeks {cam_idx})", "usb"
 
-def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="CPU", start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_duration_sec=300, max_storage_gb=20.0, only_matched=False):
+def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="AUTO", start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_duration_sec=300, max_storage_gb=20.0, only_matched=False):
     """
     Main loop for live face recognition from webcam, IP/RTSP camera, YouTube, or video file.
     """
     source_str = str(camera_source).strip()
-    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}, record_nvr={record_nvr}, only_matched={only_matched}")
+    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}, record_nvr={record_nvr}, only_matched={only_matched}, device={device}")
+    
+    accel_type, accel_status = hardware.get_onnx_acceleration_status()
     print("===================================================")
     print("      UniFace Live Camera - Prepoznavanje Lica")
+    print(f"      [{accel_status} ({accel_type})]")
     if log_events:
         print(f"      [📋 Evidencija prolazaka: AKTIVNA | Cooldown: {cooldown_sec}s]")
     if record_nvr:
@@ -509,7 +513,7 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
             # Face recognition on process_interval frames (smooth performance)
             if not paused and (frame_count % process_interval == 0):
                 try:
-                    # Analyze frame with RetinaFace + ArcFace
+                    # Analyze frame with RetinaFace + EdgeFace BASE (commercial BSD-3-Clause)
                     detected = face_engine.extract_faces_from_image(frame, device=device, with_attributes=False)
                     new_tracked = []
                     
@@ -748,7 +752,7 @@ if __name__ == "__main__":
     parser.add_argument("--camera", type=str, default=None, help="Legacy alias for camera source")
     parser.add_argument("--threshold", type=float, default=0.45, help="Recognition cosine similarity threshold (default: 0.45)")
     parser.add_argument("--skip", type=int, default=2, help="Process every N frames (default: 2)")
-    parser.add_argument("--device", type=str, default="CPU", help="Inference device: CPU or CUDA (default: CPU)")
+    parser.add_argument("--device", type=str, default="AUTO", help="Inference device: AUTO, DIRECTML, CUDA, OPENVINO, or CPU (default: AUTO)")
     parser.add_argument("--start", type=int, default=0, help="Start position in seconds for video/youtube (default: 0)")
     parser.add_argument("--log-events", action="store_true", default=False, help="Enable automatic detection event logging")
     parser.add_argument("--cooldown", type=int, default=30, help="Cooldown in seconds between re-logging same person (default: 30)")

@@ -11,7 +11,7 @@ for p in [CURRENT_DIR, os.path.join(CURRENT_DIR, "src"), PARENT_DIR, os.path.joi
 from src.multicam import run_multicam_grid
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="UniFace Multi-Camera 2x2 Grid Live Recognition")
+    parser = argparse.ArgumentParser(description="ArgusFace Multi-Camera 2x2 Grid Live Recognition")
     
     # Camera 1
     parser.add_argument("--cam1", type=str, default="0", help="Camera 1 source (USB index 0, 1 or RTSP URL)")
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip", type=int, default=3, help="Process every N frames (default: 3)")
     parser.add_argument("--log-events", action="store_true", default=False, help="Enable automatic event logging into database")
     parser.add_argument("--cooldown", type=int, default=30, help="Event logging cooldown in seconds (default: 30)")
-    parser.add_argument("--device", type=str, default="CPU", help="Inference device (CPU or CUDA)")
+    parser.add_argument("--device", type=str, default="AUTO", help="Inference device: AUTO, DIRECTML, CUDA, OPENVINO, or CPU (default: AUTO)")
     parser.add_argument("--record-nvr", action="store_true", default=False, help="Enable continuous NVR MP4 segment recording")
     parser.add_argument("--segment-min", type=int, default=5, help="Duration of each MP4 video segment in minutes (default: 5)")
     parser.add_argument("--max-gb", type=float, default=20.0, help="Maximum disk storage quota in GB for FIFO cleanup (default: 20)")

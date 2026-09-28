@@ -1,1 +1,1 @@
-"""UniFace Studio package."""
+"""ArgusFace Studio package."""

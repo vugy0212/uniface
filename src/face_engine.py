@@ -10,25 +10,76 @@ if os.path.isdir(_local_models_dir):
 from uniface import FaceAnalyzer, RetinaFace, EdgeFace
 from uniface.recognition.edgeface import EdgeFaceWeights
 
-_analyzer_instance = None
+_analyzer_instances = {}
 
-def get_analyzer(device="CPU", with_attributes=False):
+def get_execution_providers(device: str = "AUTO") -> list[str]:
+    """
+    Resolves prioritized ONNX Runtime execution providers based on requested target.
+    Supports:
+      - 'AUTO': Probes CUDA -> DirectML (DML) -> OpenVINO -> CoreML -> ROCm -> CPU
+      - 'DIRECTML' / 'DML': Forces DirectX 12 hardware acceleration (Intel/AMD/NVIDIA/NPU)
+      - 'CUDA': Forces NVIDIA CUDA
+      - 'OPENVINO': Forces Intel OpenVINO
+      - 'CPU': Forces universal CPU execution
+    """
+    dev = (device or "AUTO").upper().strip()
+    if dev == "CPU":
+        return ["CPUExecutionProvider"]
+
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+    except Exception:
+        return ["CPUExecutionProvider"]
+
+    if dev in ("DIRECTML", "DML"):
+        if "DmlExecutionProvider" in available:
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+    if dev == "CUDA":
+        if "CUDAExecutionProvider" in available:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+    if dev == "OPENVINO":
+        if "OpenVINOExecutionProvider" in available:
+            return ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+    # AUTO: prioritize highest-performance available providers
+    providers = []
+    for candidate in [
+        "CUDAExecutionProvider",
+        "DmlExecutionProvider",
+        "OpenVINOExecutionProvider",
+        "CoreMLExecutionProvider",
+        "ROCMExecutionProvider"
+    ]:
+        if candidate in available:
+            providers.append(candidate)
+
+    providers.append("CPUExecutionProvider")
+    return providers
+
+def get_analyzer(device="AUTO", with_attributes=False):
     """
     Returns FaceAnalyzer using commercial-ready EdgeFace BASE recognizer (BSD-3-Clause)
-    and RetinaFace detector (MIT).
+    and RetinaFace detector (MIT), with automatic hardware acceleration negotiation.
     """
-    global _analyzer_instance
-    if _analyzer_instance is None:
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device.upper() == "CUDA" else ["CPUExecutionProvider"]
+    global _analyzer_instances
+    key = ((device or "AUTO").upper().strip(), bool(with_attributes))
+    if key not in _analyzer_instances:
+        providers = get_execution_providers(device)
         try:
             detector = RetinaFace(confidence_threshold=0.45, providers=providers)
             recognizer = EdgeFace(model_name=EdgeFaceWeights.BASE, providers=providers)
-            _analyzer_instance = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
+            _analyzer_instances[key] = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
         except Exception:
             detector = RetinaFace(confidence_threshold=0.45, providers=["CPUExecutionProvider"])
             recognizer = EdgeFace(model_name=EdgeFaceWeights.BASE, providers=["CPUExecutionProvider"])
-            _analyzer_instance = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
-    return _analyzer_instance
+            _analyzer_instances[key] = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
+    return _analyzer_instances[key]
 
 def crop_face(image: np.ndarray, bbox, margin_ratio=0.25):
     h, w = image.shape[:2]
@@ -44,7 +95,7 @@ def crop_face(image: np.ndarray, bbox, margin_ratio=0.25):
     
     return image[y1:y2, x1:x2].copy()
 
-def extract_faces_from_image(image_bgr: np.ndarray, device="CPU", with_attributes=False):
+def extract_faces_from_image(image_bgr: np.ndarray, device="AUTO", with_attributes=False):
     analyzer = get_analyzer(device, with_attributes=with_attributes)
     faces = analyzer.analyze(image_bgr)
     
@@ -303,7 +354,7 @@ def match_face(query_embedding: np.ndarray, profiles=None, threshold=0.50):
     return get_face_index().match(query_embedding, threshold)
 
 def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, threshold=0.50,
-                         draw_landmarks=False, blur_unknown=False, blur_all=False, device="CPU", face_index=None,
+                         draw_landmarks=False, blur_unknown=False, blur_all=False, device="AUTO", face_index=None,
                          cached_faces=None):
     annotated = image_bgr.copy()
     if cached_faces is not None and len(cached_faces) > 0:
