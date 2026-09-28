@@ -64,9 +64,18 @@ def get_onnx_acceleration_status() -> tuple[str, str]:
     except Exception as e:
         return "CPU", f"Automatski ({e})"
 
+def get_vector_index_status() -> tuple[str, str]:
+    """Detects vector indexing capability (FAISS HNSW / AVX2 vs NumPy BLAS)."""
+    try:
+        import faiss
+        return f"FAISS v{faiss.__version__} (HNSW / AVX2)", "⚡ Skalabilno vektorsko pretraživanje aktivno"
+    except Exception:
+        return "NumPy BLAS Flat", "⚙️ Sekvencijalno matrično pretraživanje"
+
 def get_hardware_acceleration_badge_html() -> str:
     """Generates a responsive cyber-themed HTML status badge for the UI."""
     accel_type, accel_status = get_onnx_acceleration_status()
+    vec_type, vec_status = get_vector_index_status()
     is_hw = "⚡" in accel_status
     
     badge_bg = "rgba(16, 185, 129, 0.12)" if is_hw else "rgba(100, 116, 139, 0.15)"
@@ -78,14 +87,17 @@ def get_hardware_acceleration_badge_html() -> str:
     gpu_label = gpus[0] if gpus and gpus[0] != "Nedostupno" else "Univerzalni hardver"
 
     return f"""
-    <div style="background:{badge_bg}; border:1px solid {badge_border}; border-radius:10px; padding:10px 16px; display:inline-flex; align-items:center; gap:12px; margin-bottom:12px; box-shadow:0 0 15px rgba(0,0,0,0.3);">
-        <span style="font-size:1.4rem;">{icon}</span>
+    <div style="background:{badge_bg}; border:1px solid {badge_border}; border-radius:10px; padding:12px 18px; display:inline-flex; align-items:center; gap:14px; margin-bottom:12px; box-shadow:0 0 15px rgba(0,0,0,0.3);">
+        <span style="font-size:1.6rem;">{icon}</span>
         <div>
-            <div style="font-size:0.85rem; font-weight:700; color:{text_color}; letter-spacing:0.5px; text-transform:uppercase;">
+            <div style="font-size:0.88rem; font-weight:700; color:{text_color}; letter-spacing:0.5px; text-transform:uppercase;">
                 AI Hardverska Akceleracija: {accel_type}
             </div>
             <div style="font-size:0.75rem; color:#94a3b8; margin-top:2px;">
                 Grafički podsustav: <strong style="color:#e2e8f0;">{gpu_label}</strong> &bull; Status: <span style="color:{text_color}; font-weight:600;">{accel_status}</span>
+            </div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin-top:2px;">
+                Vektorska baza: <strong style="color:#38bdf8;">{vec_type}</strong> &bull; Status: <span style="color:#10b981; font-weight:600;">{vec_status}</span>
             </div>
         </div>
     </div>
@@ -123,6 +135,7 @@ def get_system_report_markdown(data_dir: str) -> str:
     cpu_cores = os.cpu_count() or "-"
     os_name = f"{platform.system()} {platform.release()} ({platform.machine()})"
     accel_type, accel_status = get_onnx_acceleration_status()
+    vec_type, vec_status = get_vector_index_status()
     raw_providers = get_available_onnx_providers()
     providers_str = ", ".join(raw_providers) if raw_providers else "CPUExecutionProvider"
     disk = get_disk_usage_info(data_dir)
@@ -133,6 +146,7 @@ def get_system_report_markdown(data_dir: str) -> str:
 * **Procesor (CPU):** {cpu_cores} logičkih jezgri ({platform.processor() or 'x86_64'})
 * **Operativni sustav:** {os_name}
 * **ONNX Ubrzanje:** **{accel_type}** — *{accel_status}*
+* **Vektorski indeks lica:** **{vec_type}** — *{vec_status}*
 * **Detektirani pružatelji (Providers):** `{providers_str}`
 
 ---

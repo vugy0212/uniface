@@ -2,6 +2,12 @@ import os
 import cv2
 import numpy as np
 
+try:
+    import faiss
+    HAS_FAISS = True
+except Exception:
+    HAS_FAISS = False
+
 # Use local models directory if present (for self-contained / portable installs)
 _local_models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 if os.path.isdir(_local_models_dir):
@@ -172,23 +178,30 @@ def build_person_profiles(all_samples: list[dict]) -> dict:
 
 class FaceIndex:
     """
-    High-performance vectorized face search index.
-    Stacks samples and centroids into normalized matrices and uses BLAS (@)
-    for sub-millisecond similarity calculations across thousands of faces.
+    High-performance scalable vectorized face search index.
+    Supports dual-tier acceleration:
+      1. FAISS Accelerated Index (IndexFlatIP for exact sub-millisecond search;
+         IndexHNSWFlat for logarithmic O(log N) graph search on large datasets >= 1,000 vectors)
+      2. Optimized NumPy BLAS Flat Matrix Multiplication fallback.
     """
     def __init__(self, all_samples: list[dict]):
         self.profiles = build_person_profiles(all_samples)
         self.person_ids = list(self.profiles.keys())
         self.total_samples = len(all_samples)
         self.num_persons = len(self.person_ids)
+        self.backend = "NumPy BLAS"
 
         if self.total_samples == 0 or self.num_persons == 0:
             self.samples_matrix = np.empty((0, 512), dtype=np.float32)
             self.centroids_matrix = np.empty((0, 512), dtype=np.float32)
+            self.sample_to_person = []
             self.person_sample_slices = {}
+            self.faiss_samples_index = None
+            self.faiss_centroids_index = None
             return
 
         samples_list = []
+        self.sample_to_person = []
         self.person_sample_slices = {}
         curr = 0
         for pid in self.person_ids:
@@ -196,6 +209,7 @@ class FaceIndex:
             samples_list.extend(p_samples)
             n_p = len(p_samples)
             self.person_sample_slices[pid] = (curr, curr + n_p)
+            self.sample_to_person.extend([pid] * n_p)
             curr += n_p
 
         self.samples_matrix = np.ascontiguousarray(np.stack(samples_list), dtype=np.float32)
@@ -208,6 +222,33 @@ class FaceIndex:
         c_norms = np.linalg.norm(self.centroids_matrix, axis=1, keepdims=True)
         c_norms[c_norms == 0] = 1.0
         self.centroids_matrix = self.centroids_matrix / c_norms
+
+        # Initialize FAISS Index if available
+        self.faiss_samples_index = None
+        self.faiss_centroids_index = None
+        if HAS_FAISS:
+            try:
+                dim = 512
+                # If >= 1,000 vectors, use HNSW graph index; otherwise exact FlatIP
+                if self.total_samples >= 1000:
+                    self.faiss_samples_index = faiss.IndexHNSWFlat(dim, 32, faiss.METRIC_INNER_PRODUCT)
+                    self.backend = f"FAISS HNSW v{faiss.__version__} (Graph Index)"
+                else:
+                    self.faiss_samples_index = faiss.IndexFlatIP(dim)
+                    self.backend = f"FAISS FlatIP v{faiss.__version__} (AVX2 SIMD)"
+
+                self.faiss_samples_index.add(self.samples_matrix)
+
+                if self.num_persons >= 1000:
+                    self.faiss_centroids_index = faiss.IndexHNSWFlat(dim, 32, faiss.METRIC_INNER_PRODUCT)
+                else:
+                    self.faiss_centroids_index = faiss.IndexFlatIP(dim)
+
+                self.faiss_centroids_index.add(self.centroids_matrix)
+            except Exception:
+                self.faiss_samples_index = None
+                self.faiss_centroids_index = None
+                self.backend = "NumPy BLAS (Fallback)"
 
     def match(self, query_embedding: np.ndarray, threshold: float = 0.50) -> dict:
         if self.total_samples == 0 or query_embedding is None:
@@ -222,7 +263,8 @@ class FaceIndex:
                 "quality_badge": "Nema uzoraka",
                 "sample_count": 0,
                 "margin": 0.0,
-                "crop_path": None
+                "crop_path": None,
+                "index_backend": self.backend
             }
 
         q = np.ascontiguousarray(query_embedding, dtype=np.float32)
@@ -230,35 +272,92 @@ class FaceIndex:
         if q_norm > 0:
             q = q / q_norm
 
-        # 1. BLAS matrix-vector product for all samples simultaneously
-        all_sample_sims = self.samples_matrix @ q
-        # 2. BLAS matrix-vector product for all centroids simultaneously
-        all_centroid_sims = self.centroids_matrix @ q
+        # Scalable candidate selection for medium/large databases (> 100 profiles)
+        if self.faiss_samples_index is not None and self.num_persons > 100:
+            q_batch = q[np.newaxis, :]
+            k_s = min(60, self.total_samples)
+            D_s, I_s = self.faiss_samples_index.search(q_batch, k_s)
 
-        candidate_scores = []
-        for i, pid in enumerate(self.person_ids):
-            p = self.profiles[pid]
-            start_i, end_i = self.person_sample_slices[pid]
-            s_sims = all_sample_sims[start_i:end_i]
-            max_sim = float(np.max(s_sims)) if len(s_sims) > 0 else 0.0
-            centroid_sim = float(all_centroid_sims[i])
+            k_c = min(40, self.num_persons)
+            D_c, I_c = self.faiss_centroids_index.search(q_batch, k_c)
 
-            if p["count"] > 1:
-                effective_sim = max(max_sim * 0.96, centroid_sim, 0.45 * max_sim + 0.55 * centroid_sim)
-            else:
-                effective_sim = max_sim
+            candidate_pids = set()
+            for idx in I_s[0]:
+                if 0 <= idx < len(self.sample_to_person):
+                    candidate_pids.add(self.sample_to_person[idx])
+            for idx in I_c[0]:
+                if 0 <= idx < len(self.person_ids):
+                    candidate_pids.add(self.person_ids[idx])
 
-            candidate_scores.append({
-                "person_id": pid,
-                "person_name": p["person_name"],
-                "similarity": max(0.0, effective_sim),
-                "max_sample_sim": max(0.0, max_sim),
-                "centroid_sim": max(0.0, centroid_sim),
-                "count": p["count"],
-                "quality_badge": p["quality_badge"],
-                "quality_icon": p["quality_icon"],
-                "crop_path": p["crop_path"]
-            })
+            candidate_scores = []
+            for pid in candidate_pids:
+                p = self.profiles[pid]
+                start_i, end_i = self.person_sample_slices[pid]
+                s_sims = self.samples_matrix[start_i:end_i] @ q
+                max_sim = float(np.max(s_sims)) if len(s_sims) > 0 else 0.0
+                centroid_sim = float(p["centroid"] @ q)
+
+                if p["count"] > 1:
+                    effective_sim = max(max_sim * 0.96, centroid_sim, 0.45 * max_sim + 0.55 * centroid_sim)
+                else:
+                    effective_sim = max_sim
+
+                candidate_scores.append({
+                    "person_id": pid,
+                    "person_name": p["person_name"],
+                    "similarity": max(0.0, effective_sim),
+                    "max_sample_sim": max(0.0, max_sim),
+                    "centroid_sim": max(0.0, centroid_sim),
+                    "count": p["count"],
+                    "quality_badge": p["quality_badge"],
+                    "quality_icon": p["quality_icon"],
+                    "crop_path": p["crop_path"]
+                })
+        else:
+            # Full evaluation across all registered persons (NumPy BLAS / small DB)
+            all_sample_sims = self.samples_matrix @ q
+            all_centroid_sims = self.centroids_matrix @ q
+
+            candidate_scores = []
+            for i, pid in enumerate(self.person_ids):
+                p = self.profiles[pid]
+                start_i, end_i = self.person_sample_slices[pid]
+                s_sims = all_sample_sims[start_i:end_i]
+                max_sim = float(np.max(s_sims)) if len(s_sims) > 0 else 0.0
+                centroid_sim = float(all_centroid_sims[i])
+
+                if p["count"] > 1:
+                    effective_sim = max(max_sim * 0.96, centroid_sim, 0.45 * max_sim + 0.55 * centroid_sim)
+                else:
+                    effective_sim = max_sim
+
+                candidate_scores.append({
+                    "person_id": pid,
+                    "person_name": p["person_name"],
+                    "similarity": max(0.0, effective_sim),
+                    "max_sample_sim": max(0.0, max_sim),
+                    "centroid_sim": max(0.0, centroid_sim),
+                    "count": p["count"],
+                    "quality_badge": p["quality_badge"],
+                    "quality_icon": p["quality_icon"],
+                    "crop_path": p["crop_path"]
+                })
+
+        if not candidate_scores:
+            return {
+                "matched": False,
+                "best_name": "Nepoznat",
+                "person_name": "Nepoznat",
+                "person_id": None,
+                "similarity": 0.0,
+                "status": "Nepoznat",
+                "quality_icon": "⚪",
+                "quality_badge": "Nema poklapanja",
+                "sample_count": 0,
+                "margin": 0.0,
+                "crop_path": None,
+                "index_backend": self.backend
+            }
 
         candidate_scores.sort(key=lambda x: x["similarity"], reverse=True)
         best = candidate_scores[0]
@@ -285,12 +384,23 @@ class FaceIndex:
             "quality_badge": best["quality_badge"],
             "sample_count": best["count"],
             "margin": margin,
-            "crop_path": best["crop_path"]
+            "crop_path": best["crop_path"],
+            "index_backend": self.backend
         }
 
     def match_sample_hybrid(self, query_embedding: np.ndarray, threshold: float = 0.50) -> dict:
         """Alias for match method for backward and live camera compatibility."""
         return self.match(query_embedding, threshold=threshold)
+
+    def get_info(self) -> dict:
+        """Returns metadata about the active vector index backend."""
+        return {
+            "backend": self.backend,
+            "has_faiss": HAS_FAISS,
+            "total_samples": self.total_samples,
+            "num_persons": self.num_persons,
+            "dimension": 512
+        }
 
 _face_index = None
 
@@ -298,9 +408,9 @@ def invalidate_face_index():
     global _face_index
     _face_index = None
 
-def get_face_index(all_samples=None) -> FaceIndex:
+def get_face_index(all_samples=None, force_refresh=False) -> FaceIndex:
     global _face_index
-    if _face_index is None:
+    if _face_index is None or force_refresh:
         if all_samples is None:
             try:
                 import db
