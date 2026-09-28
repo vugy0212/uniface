@@ -1,5 +1,5 @@
 @echo off
-title UniFace Studio
+title ArgusFace Studio
 cd /d "%~dp0"
 
 :: 1. Oslobodi port 7860 ako je zaostala stara instanca

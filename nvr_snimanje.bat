@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
-title UniFace 24/7 NVR Video Snimanje i Biometrijska Evidencija
+title ArgusFace 24/7 NVR Video Snimanje i Biometrijska Evidencija
 cls
 
 echo =========================================================================
-echo       UniFace 24/7 NVR Servis - Snimanje i Evidencija Lica
+echo       ArgusFace 24/7 NVR Servis - Snimanje i Evidencija Lica
 echo =========================================================================
 echo.
 echo  Kamera 1: USB Web Kamera (0)

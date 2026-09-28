@@ -1,7 +1,7 @@
 @echo off
-title UniFace - Live Prepoznavanje Lica (Logitech C270)
+title ArgusFace - Live Prepoznavanje Lica
 echo ===================================================
-echo     UniFace Live Camera - Logitech C270
+echo     ArgusFace Live Camera
 echo ===================================================
 echo.
 

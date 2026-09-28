@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title UniFace Multi-Camera 2x2 Grid
+title ArgusFace Multi-Camera 2x2 Grid
 cd /d "%~dp0"
 
 if exist "python\python.exe" (
@@ -12,7 +12,7 @@ if exist "python\python.exe" (
 )
 
 echo ===================================================
-echo     Pokretanje UniFace 2x2 Multi-Cam Nadzorne Mreze
+echo     Pokretanje ArgusFace 2x2 Multi-Cam Nadzorne Mreze
 echo ===================================================
 echo [Tipka 1-4] Povecanje pojedine kamere (Solo mod)
 echo [Tipka 0/ESC] Povratak na 2x2 prikaz
