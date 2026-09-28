@@ -3715,6 +3715,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                 label="Politika zadržavanja podataka",
                                 choices=ret_choices,
                                 value=init_choice,
+                                interactive=True,
+                                allow_custom_value=False,
                                 scale=3
                             )
                             btn_run_retention = gr.Button("🧹 Očisti stare podatke odmah", variant="secondary", scale=2, elem_classes=["btn-cyber-primary"])
