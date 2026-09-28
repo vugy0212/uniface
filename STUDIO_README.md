@@ -1,6 +1,6 @@
-# 👤 UniFace Studio - Sustav za prepoznavanje i analizu lica
+# 👤 ArgusFace Studio - Sustav za prepoznavanje i analizu lica
 
-UniFace Studio je kompletna aplikacija s modernim grafičkim web sučeljem (**Gradio Web UI**) koja radi **100% lokalno** na vašem računalu, koristeći **UniFace v4.0.0**, **RetinaFace**, **ArcFace**, **FairFace** i **SQLite** bazu lica.
+ArgusFace Studio je kompletna aplikacija s modernim grafičkim web sučeljem (**Gradio Web UI**) koja radi **100% lokalno** na vašem računalu, koristeći **RetinaFace** (MIT), **EdgeFace BASE** (BSD-3-Clause) i **SQLite** bazu lica uz 100% komercijalnu licencu.
 
 ---
 
@@ -31,29 +31,36 @@ Aplikacija se otvara kao samostalna **desktop aplikacija** (nativni prozor bez a
 
 ## 🌟 Ključne mogućnosti
 
-### 1. 👥 Baza Osoba (Unos, uređivanje i pretraga)
+### 1. 👥 Baza Osoba (Unos, uređivanje, centroid i FAISS indeks)
 * **Unos pojedinačnih i grupnih fotografija:** Učitajte sliku s jednom ili više osoba. Sustav automatski detektira sva lica, numerira ih i omogućuje odabir točno onog lica koje želite spremiti u bazu.
-* **Pretraga osoba:** Integrirana tražilica za brzo filtriranje osoba u bazi po imenu ili bilješci u stvarnom vremenu.
-* **Brzi odabir iz tablice:** Klikom na osobu u tablici automatski se otvara njena galerija spremljenih uzoraka lica te se popunjava obrazac za brzo dodavanje novih fotografija.
-* **Galerija i brisanje uzoraka:** Pregledajte sva registrirana lica po osobi i uklonite pojedinačne slike ili cijelu osobu jednim klikom.
+* **Uređivanje profila i bilješki (Novo):** Klikom na bilo koju osobu u tablici možete izravno urediti ime, prezime ili administrativne bilješke te spremiti izmjene u bazu jednim klikom.
+* **Centroid Multi-Sample tehnologija:** Spajanje višestrukih fotografija u jedinstveni biometrijski centroid podiže točnost prepoznavanja na preko 95-100%.
+* **⚡ FAISS Vektorski Indeks (Novo):** Ugrađeni C++ AVX2/HNSW vektorski indeks omogućuje sub-milisekundno pretraživanje (0.1 ms) čak i pri bazama s desecima tisuća lica, bez CPU zagušenja.
+* **Pretraga i brzi odabir:** Tražilica u stvarnom vremenu po imenu ili bilješci, pregled galerije uzoraka i jednostavno brisanje.
 
 ### 2. 🔍 Prepoznavanje i analiza lica
-* **Višestruko prepoznavanje:** Detektira i uspoređuje sva lica s fotografije prema biometrijskim vektorima iz baze (512-dimenzionalni ArcFace embedding).
+* **Višestruko prepoznavanje:** Detektira i uspoređuje sva lica s fotografije prema biometrijskim vektorima iz baze (512-dimenzionalni EdgeFace BASE embedding).
 * **Pregledni vizualni rezultati:**
   * 🟩 **Zeleni okvir:** Prepoznata osoba s imenom, postotkom točnosti i sigurnosnom marginom u odnosu na drugog najizglednijeg kandidata.
   * 🟥 **Crveni okvir:** Nepoznata osoba s postotkom maksimalne sličnosti.
 * **Finotuning parametara:**
   * Klizač za prag prepoznavanja (preporučeno `0.45 - 0.55`).
   * Opcija automatskog zamućenja (cenzure) nepoznatih lica i prolaznika.
+  * Pametni prikaz kartica detekcija (zadano samo prepoznati, uz mogućnost prikaza svih lica).
 * **Registracija nepoznatih direktno iz rezultata:** Ako sustav detektira lice koje nije u bazi, možete ga direktno iz rezultata analize spremiti kao novu osobu.
 
-### 3. 🛡️ Lokalna privatnost i sigurnost
-* Nijedna fotografija niti vektor ne napuštaju vaše računalo.
-* Radi potpuno samostalno bez internetske veze (*offline*).
-* Baza podataka pohranjena je lokalno u SQLite datoteci (`data/database.db`).
+### 3. 🛡️ Lokalna privatnost, GDPR i Sigurnost
+* **100% lokalna obrada (On-Premise):** Nijedna fotografija niti vektor nikada ne napuštaju vaše računalo. Radi potpuno samostalno bez interneta (*offline*).
+* **🛡️ GDPR Automatska Rotacija Podataka (Novo):** Usklađeno s Člankom 5(1)(e) GDPR-a (*Storage limitation*). U Tabu 6 možete odabrati rok rotacije (15 dana preporučeno za video nadzor / AZOP, 30, 60, 90 dana ili trajno). Sustav pri svakom startu automatski uklanja stare događaje, kadrove i NVR MP4 snimke te oslobađa prostor na disku.
+* **Pravo na zaborav (Članak 17. GDPR-a):** Trenutno trajno brisanje profila osobe i svih povezanih biometrijskih vektora.
 
-### 4. 🎛️ Mreža Više Kamera (Multi-Camera 2×2 Grid)
-* **Paralelno procesiranje do 4 kamere istovremeno:** Podržava kombinaciju lokalnih USB web kamera i mrežnih IP/RTSP nadzornih kamera (npr. Denver IPC-1030MK2 na `192.168.50.236`).
+### 4. ⚡ Univerzalno Hardversko Ubrzanje (DirectML & OpenVINO) (Novo)
+* **DirectX 12 GPU & NPU akceleracija:** Podrška za **Intel Iris Xe, Intel Arc, AMD Radeon, NVIDIA GeForce i NPU procesore** (Intel Core Ultra, AMD Ryzen AI) bez potrebe za instaliranjem vanjskog CUDA SDK-a.
+* **Automatska detekcija (`device="AUTO"`):** Sustav automatski prepoznaje najbolji dostupni grafički hardver za video nadzor uživo, multi-cam mrežu i sortiranje slika.
+* **Cyber statusni bedž (Tab 6):** Prikazuje aktivni mehanizam ubrzanja, detektirane grafičke kartice i status vektorske baze u stvarnom vremenu.
+
+### 5. 🎛️ Mreža Više Kamera (Multi-Camera 2×2 Grid)
+* **Paralelno procesiranje do 4 kamere istovremeno:** Podržava kombinaciju lokalnih USB web kamera i mrežnih IP/RTSP nadzornih kamera (npr. Denver IPC-1030MK2).
 * **Interaktivne prečice u prozoru nadzora:**
   * `[1]` do `[4]`: Solo prikaz preko cijelog ekrana za odabranu kameru.
   * `[0]` ili `[ESC]`: Povratak u 2×2 mrežu.
@@ -62,7 +69,7 @@ Aplikacija se otvara kao samostalna **desktop aplikacija** (nativni prozor bez a
   * `[S]`: Spremanje kadra visoke rezolucije u arhivu.
   * `[Q]`: Sigurno zaustavljanje i izlaz.
 
-### 5. 📹 24/7 NVR Snimanje i Biometrijski Video Markeri
+### 6. 📹 24/7 NVR Snimanje i Biometrijski Video Markeri
 * **Kontinuirano snimanje u rotirajuće MP4 segmente:** Podesivo trajanje segmenata (npr. 5 minuta po datoteci).
 * **Automatsko FIFO čišćenje diska:** Održava zauzeće unutar zadane kvote (npr. 20 GB) automatskim brisanjem najstarijih segmenata.
 * **Biometrijski video markeri (Bookmarks):** Svaki prepoznati prolazak u bazi automatski bilježi točnu video datoteku i vremensku sekundu detekcije (`video_offset_sec`).
