@@ -223,7 +223,7 @@ def generate_detection_cards_html(results, show_all_faces=False):
     """
 
 # ---------------- PREPOZNAVANJE ----------------
-def recognize_faces(image, threshold, draw_landmarks, blur_unknown, show_all_faces=False):
+def recognize_faces(image, threshold, draw_landmarks, blur_unknown, blur_all=False, show_all_faces=False, cached_faces=None):
     if image is None:
         return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
     
@@ -235,7 +235,9 @@ def recognize_faces(image, threshold, draw_landmarks, blur_unknown, show_all_fac
         img_bgr,
         threshold=float(threshold),
         draw_landmarks=bool(draw_landmarks),
-        blur_unknown=bool(blur_unknown)
+        blur_unknown=bool(blur_unknown),
+        blur_all=bool(blur_all),
+        cached_faces=cached_faces
     )
     
     annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
@@ -791,7 +793,12 @@ def render_person_avatar_html(person_id):
 
 def on_table_select(table_data, evt: gr.SelectData):
     if evt.index is None:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), render_person_avatar_html(None)
+        return (
+            gr.update(), [], "", gr.update(),
+            gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
+            gr.update(), render_person_avatar_html(None),
+            gr.update(), gr.update(), ""
+        )
         
     row_idx = evt.index[0]
     person_id = None
@@ -809,11 +816,21 @@ def on_table_select(table_data, evt: gr.SelectData):
             person_id = all_p[row_idx]["id"]
             
     if person_id is None:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), render_person_avatar_html(None)
+        return (
+            gr.update(), [], "", gr.update(),
+            gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
+            gr.update(), render_person_avatar_html(None),
+            gr.update(), gr.update(), ""
+        )
         
     p = db.get_person(person_id)
     if not p:
-        return gr.update(), [], "", gr.update(), gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", gr.update(), render_person_avatar_html(None)
+        return (
+            gr.update(), [], "", gr.update(),
+            gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
+            gr.update(), render_person_avatar_html(None),
+            gr.update(), gr.update(), ""
+        )
         
     choice = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
     gallery, info, sample_drop = view_person_details(choice)
@@ -828,17 +845,28 @@ def on_table_select(table_data, evt: gr.SelectData):
         choice, gallery, info, sample_drop,
         name_val, notes_val, btn_text, status_msg,
         gr.update(value=choice),
-        avatar_html
+        avatar_html,
+        name_val, notes_val, ""
     )
 
 def on_existing_person_picked(selected_choice):
     person_id = parse_person_id(selected_choice)
     if person_id is None:
-        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), render_person_avatar_html(None)
+        return (
+            gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
+            [], "", gr.update(), gr.update(),
+            render_person_avatar_html(None),
+            gr.update(), gr.update(), ""
+        )
         
     p = db.get_person(person_id)
     if not p:
-        return gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "", [], "", gr.update(), gr.update(), render_person_avatar_html(None)
+        return (
+            gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
+            [], "", gr.update(), gr.update(),
+            render_person_avatar_html(None),
+            gr.update(), gr.update(), ""
+        )
         
     name_val = p["name"]
     notes_val = p["notes"] or ""
@@ -851,8 +879,21 @@ def on_existing_person_picked(selected_choice):
     return (
         name_val, notes_val, btn_text, status_msg,
         gallery, info, sample_drop, gr.update(value=choice_str),
-        avatar_html
+        avatar_html,
+        name_val, notes_val, ""
     )
+
+def on_manage_person_change(selected_person_str):
+    person_id = parse_person_id(selected_person_str)
+    if person_id is None:
+        return [], "Kliknite na osobu u tablici ili je pretražite iznad.", gr.update(choices=[], value=None), "", "", ""
+        
+    p = db.get_person(person_id)
+    if not p:
+        return [], "Osoba nije pronađena u bazi.", gr.update(choices=[], value=None), "", "", ""
+        
+    gallery, info, sample_drop = view_person_details(selected_person_str)
+    return gallery, info, sample_drop, p["name"], p["notes"] or "", ""
 
 def on_table_search_changed(search_query):
     rows, stats = refresh_database_view(search_query)
@@ -867,7 +908,7 @@ def on_table_search_clear():
 def delete_selected_person(selected_person_str):
     person_id = parse_person_id(selected_person_str)
     if person_id is None:
-        return "⚠️ Niste odabrali osobu.", gr.update(), gr.update(), gr.update(), gr.update(), [], ""
+        return "⚠️ Niste odabrali osobu.", gr.update(), gr.update(), gr.update(), gr.update(), [], "", "", "", ""
         
     p = db.get_person(person_id)
     if p:
@@ -878,7 +919,64 @@ def delete_selected_person(selected_person_str):
         
     choices = get_person_dropdown_choices()
     table_view, stats_view = refresh_database_view()
-    return msg, gr.update(choices=choices, value=None), gr.update(choices=choices, value=None), table_view, stats_view, [], ""
+    return msg, gr.update(choices=choices, value=None), gr.update(choices=choices, value=None), table_view, stats_view, [], "", "", "", ""
+
+def update_person_handler(selected_person_str, new_name, new_notes):
+    person_id = parse_person_id(selected_person_str)
+    if person_id is None:
+        return (
+            "⚠️ Nije odabrana valjana osoba za uređivanje. Kliknite na redak u tablici ili odaberite osobu iz padajućeg izbornika.",
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        )
+    
+    new_name = (new_name or "").strip()
+    if not new_name:
+        return (
+            "⚠️ Ime i prezime osobe ne smije biti prazno.",
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        )
+    
+    try:
+        db.update_person(person_id, new_name, (new_notes or "").strip())
+    except ValueError as ve:
+        return (
+            f"⚠️ {str(ve)}",
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        )
+    except Exception as e:
+        return (
+            f"❌ Greška pri spremanju izmjena: {e}",
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        )
+    
+    updated_person = db.get_person(person_id)
+    sample_count = updated_person["sample_count"] if updated_person else 0
+    new_choice_str = f"{person_id}: {new_name} ({sample_count} slika)"
+    
+    table_view, stats_view = refresh_database_view()
+    choices = get_person_dropdown_choices()
+    _, info_text, _ = view_person_details(new_choice_str)
+    avatar_html = render_person_avatar_html(person_id)
+    btn_text = f"💾 Spremi odabrano lice za: {new_name}"
+    
+    success_msg = f"✅ **Uspješno spremljeno:** Podaci za osobu **{new_name}** su ažurirani!"
+    
+    return (
+        success_msg,
+        table_view,
+        stats_view,
+        gr.update(choices=choices, value=new_choice_str),
+        gr.update(choices=choices, value=new_choice_str),
+        new_name,
+        (new_notes or "").strip(),
+        info_text,
+        avatar_html,
+        btn_text
+    )
 
 def delete_selected_sample(selected_sample_str, selected_person_str):
     if not selected_sample_str:
@@ -1140,7 +1238,7 @@ def on_reset_snapshot_dir_click():
     g, t, info, dd, prev, desc = get_snapshots_ui_data()
     return f"Vraćeno na zadanu mapu: `{config.DEFAULT_SNAPSHOT_DIR}`", config.DEFAULT_SNAPSHOT_DIR, info, g, t, dd, prev, desc
 
-def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur, show_all_faces=False):
+def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur_mode, show_all_faces=False):
     if not filename:
         return None, None, [], None, "⚠️ Nema odabrane snimke za analizu.", gr.update(choices=[]), [], generate_detection_cards_html([], show_all_faces=show_all_faces), "⚠️ Nema odabrane snimke."
     snap_dir = config.get_snapshot_dir()
@@ -1148,9 +1246,11 @@ def on_send_snapshot_to_recognition(filename, threshold, landmarks, blur, show_a
     if not os.path.isfile(path):
         return None, None, [], None, "⚠️ Datoteka nije pronađena.", gr.update(choices=[]), [], generate_detection_cards_html([], show_all_faces=show_all_faces), "⚠️ Datoteka nije pronađena."
     
+    blur_unknown = blur_mode == "🔒 Zamuti nepoznata lica"
+    blur_all     = blur_mode == "🛡️ Zamuti sva lica (GDPR)"
     pil_img = Image.open(path).convert("RGB")
     annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html = recognize_faces(
-        pil_img, threshold, landmarks, blur, show_all_faces=show_all_faces
+        pil_img, threshold, landmarks, blur_unknown, blur_all=blur_all, show_all_faces=show_all_faces
     )
     msg = f"✅ Kadar `{filename}` je prebačen u Tab 1 i analiziran!"
     return pil_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, cards_html, msg
@@ -2614,6 +2714,101 @@ input[type="range"] {
     align-items: center !important;
     gap: 14px !important;
 }
+
+/* ═══════════════════════════════════════════════════════
+   PILL TAB NAVIGACIJA — Custom cyber stil
+═══════════════════════════════════════════════════════ */
+.tabs > .tab-nav {
+    background: rgba(7, 10, 18, 0.6) !important;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.18) !important;
+    padding: 6px 6px 0 6px !important;
+    gap: 4px !important;
+    flex-wrap: wrap !important;
+}
+
+.tabs > .tab-nav > button {
+    background: rgba(13, 20, 36, 0.7) !important;
+    border: 1px solid rgba(56, 189, 248, 0.18) !important;
+    border-bottom: none !important;
+    border-radius: 10px 10px 0 0 !important;
+    color: #94a3b8 !important;
+    font-weight: 600 !important;
+    font-size: 0.87rem !important;
+    padding: 7px 16px !important;
+    letter-spacing: 0.02em !important;
+    transition: all 0.22s ease !important;
+    position: relative !important;
+}
+
+.tabs > .tab-nav > button:hover {
+    background: rgba(30, 41, 59, 0.85) !important;
+    color: #e2e8f0 !important;
+    border-color: rgba(56, 189, 248, 0.35) !important;
+}
+
+.tabs > .tab-nav > button.selected {
+    background: linear-gradient(180deg, rgba(6,182,212,0.18) 0%, rgba(13,20,36,0.95) 100%) !important;
+    border-color: rgba(6, 182, 212, 0.5) !important;
+    color: #06b6d4 !important;
+    box-shadow: 0 -2px 12px rgba(6,182,212,0.2), inset 0 1px 0 rgba(6,182,212,0.3) !important;
+    text-shadow: 0 0 8px rgba(6,182,212,0.5) !important;
+}
+
+.tabs > .tab-nav > button.selected::after {
+    content: '';
+    position: absolute !important;
+    bottom: -1px;
+    left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #06b6d4, transparent) !important;
+}
+
+/* Blur Mode Radio Group — vizualno grupiranje */
+.blur-mode-group .wrap {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 5px !important;
+}
+
+.blur-mode-group label.svelte-1gfkn6j,
+.blur-mode-group label {
+    background: rgba(13, 20, 36, 0.7) !important;
+    border: 1px solid rgba(56, 189, 248, 0.15) !important;
+    border-radius: 8px !important;
+    padding: 5px 10px !important;
+    transition: all 0.18s ease !important;
+}
+
+.blur-mode-group label:has(input:checked) {
+    background: rgba(6, 182, 212, 0.12) !important;
+    border-color: rgba(6, 182, 212, 0.4) !important;
+    color: #38bdf8 !important;
+}
+
+/* Similarity confidence bar */
+.sim-bar-wrap {
+    height: 3px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 3px;
+    margin-top: 4px;
+    overflow: hidden;
+}
+
+/* Edit person section */
+.edit-person-card {
+    border: 1px solid rgba(6, 182, 212, 0.35) !important;
+    background: rgba(10, 25, 45, 0.65) !important;
+    border-radius: 12px !important;
+    padding: 14px 16px !important;
+    margin: 10px 0 !important;
+    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.08) !important;
+}
+
+.edit-person-card h4 {
+    color: #38bdf8 !important;
+    margin-bottom: 8px !important;
+    font-weight: 600 !important;
+}
 """
 
 HEAD_DARK_JS = """
@@ -2724,12 +2919,12 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                 </div>
                 <div class="header-titles">
                     <div class="header-main-title">
-                        <span class="title-brand">UniFace</span>
+                        <span class="title-brand">ArgusFace</span>
                         <span class="title-divider">•</span>
                         <span class="title-desc">Biometrijski Sustav za Prepoznavanje Lica</span>
                     </div>
                     <div class="header-subtitle">
-                        100% lokalno i sigurno &nbsp;|&nbsp; RetinaFace detektor • ArcFace ResNet50 prepoznavanje • FairFace analiza dobi i spola
+                        100% lokalno i sigurno &nbsp;|&nbsp; RetinaFace detektor • EdgeFace Base prepoznavanje
                     </div>
                 </div>
             </div>
@@ -2772,8 +2967,24 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             info="Preporučeno: 0.40 - 0.50 (veće = strože, manje = blaže)"
                         )
                         with gr.Row():
-                            landmarks_chk = gr.Checkbox(value=False, label="Prikaži točke lica (Landmarks)")
-                            blur_chk = gr.Checkbox(value=False, label="Zamućenje nepoznatih lica")
+                            landmarks_chk = gr.Checkbox(
+                                value=False,
+                                label="🔵 Prikaži točke lica (Landmarks)",
+                                info="Biometrijska wireframe geometrija lica"
+                            )
+                        blur_mode_radio = gr.Radio(
+                            choices=[
+                                "🔓 Bez zamućivanja",
+                                "🔒 Zamuti nepoznata lica",
+                                "🛡️ Zamuti sva lica (GDPR)"
+                            ],
+                            value="🔓 Bez zamućivanja",
+                            label="Privatnost / Anonimizacija",
+                            info="Odaberite razinu zaštite privatnosti na slici",
+                            elem_classes=["blur-mode-group"]
+                        )
+                    with gr.Row():
+                        btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
                             
                     with gr.Accordion("📹 Live Nadzor i Kamere (Pojedinačna ili 2×2 Mreža)", open=False, elem_classes=["cyber-accordion"]):
                         live_mode_radio = gr.Radio(
@@ -2884,7 +3095,6 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         )
 
                     with gr.Row():
-                        btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
                         btn_launch_live = gr.Button("🎥 Pokreni Live Kameru", variant="secondary", scale=2, elem_classes=["btn-cyber-live"])
                         btn_launch_grid = gr.Button("🎛️ Pokreni 2×2 Mrežu", variant="secondary", scale=2, visible=False, elem_classes=["btn-cyber-live"])
                         btn_open_snaps_quick = gr.Button("📂 Snimke (S)", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
@@ -3066,7 +3276,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         headers=["ID", "Ime", "Broj slika", "Kvaliteta profila", "Bilješke", "Datum registracije"],
                         label="Popis osoba (Kliknite na bilo koji redak za automatski odabir osobe za unos)",
                         interactive=False,
-                        max_height=300
+                        max_height=480
                     )
                     btn_refresh_db = gr.Button("🔄 Osvježi cijeli popis", size="sm", elem_classes=["btn-cyber-secondary"])
                     
@@ -3074,7 +3284,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                     with gr.Accordion("🖼️ Referentne slike i biometrijski profil odabrane osobe", open=True, elem_classes=["cyber-accordion"]):
                         with gr.Row():
                             manage_person_dropdown = gr.Dropdown(
-                                label="Odaberite osobu za pregled ili brisanje",
+                                label="Odaberite osobu za pregled, uređivanje ili brisanje",
                                 choices=get_person_dropdown_choices(),
                                 allow_custom_value=True,
                                 scale=3
@@ -3082,6 +3292,31 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             btn_delete_person = gr.Button("🗑️ Obriši osobu", variant="stop", scale=1)
                             
                         person_info_md = gr.Markdown("Odaberite osobu iznad ili kliknite na nju u tablici za pregled lica.")
+                        
+                        # Zona za naknadno uređivanje imena, prezimena i bilješki
+                        with gr.Group(elem_classes=["cyber-card", "edit-person-card"]):
+                            gr.Markdown("#### ✏️ Uređivanje podataka odabrane osobe (Ime, prezime i bilješke)")
+                            with gr.Row():
+                                edit_person_name = gr.Textbox(
+                                    label="Ime i prezime",
+                                    placeholder="Upišite novo ime...",
+                                    scale=3
+                                )
+                                edit_person_notes = gr.Textbox(
+                                    label="Bilješke",
+                                    placeholder="Upišite ili dopunite bilješku (odjel, uloga, opaske...)",
+                                    lines=2,
+                                    scale=4
+                                )
+                            with gr.Row():
+                                btn_save_person_edit = gr.Button(
+                                    "💾 Spremi izmjene",
+                                    variant="primary",
+                                    scale=2,
+                                    elem_classes=["btn-cyber-primary"]
+                                )
+                                edit_person_status = gr.Markdown("", scale=4)
+
                         person_gallery = gr.Gallery(
                             label="Spremljeni uzorci lica",
                             columns=5,
@@ -3096,7 +3331,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                 allow_custom_value=True,
                                 scale=3
                             )
-                            btn_delete_sample = gr.Button("Obriši odabranu sliku", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
+                            btn_delete_sample = gr.Button("🗑️ Obriši odabranu sliku", variant="stop", scale=1)
                         sample_action_status = gr.Markdown("")
 
         # ------------------ TAB 3: SPREMLJENI KADROVI & VIDEO SNIMKE ------------------
@@ -3411,6 +3646,32 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
                         backup_import_status = gr.Markdown("")
 
+            gr.Markdown("---")
+            with gr.Accordion("⚖️ Pravne napomene, licence i regulatorna usklađenost (GDPR & EU AI Act)", open=True, elem_classes=["cyber-accordion"]):
+                gr.Markdown(
+                    """
+                    ### 📜 Komercijalne licence AI modela i tehnološkog stoga
+                    ArgusFace Studio je konfiguriran s fokusom na **100% legalnu, čistu i sigurnu komercijalnu primjenu** bez akademskih ograničenja ili skrivenih naknada:
+                    * **Detekcija lica (RetinaFace):** Licencirano pod **MIT licencom**. Omogućuje ultra-brzo i robusno pronalaženje lica i ključnih točaka.
+                    * **Prepoznavanje lica (EdgeFace BASE):** Licencirano pod **BSD-3-Clause licencom** (*Idiap Research Institute*, Švicarska). Generira 512-dimenzionalne normalizirane biometrijske vektore uz točnost od **99.83%** na LFW standardu.
+                    * **Inženjerski i grafički stog:** Razvijeno u Pythonu uz **OpenCV** i **ONNX Runtime** (oba pod **Apache 2.0** licencom).
+                    * **Distribucija i komercijalizacija:** Cjelokupni stog modela i biblioteka slobodan je za komercijalnu prodaju, instalaciju kod klijenata i licenciranje trećim stranama.
+
+                    ---
+
+                    ### 🛡️ Zaštita osobnih i biometrijskih podataka (GDPR usklađenost)
+                    * **100% Lokalna obrada (Edge / On-Premise):** Sva obrada slika, video tokova i biometrijskih vektora odvija se isključivo na lokalnom računalu. Niti jedan podatak, slika ili vektor nikada se ne prenosi na vanjske poslužitelje ili Cloud.
+                    * **Biometrijski podaci (Članak 9. GDPR-a):** 512-D vektori tretiraju se kao biometrijski podaci. Korisnik/vlasnik sustava odgovoran je za zakonitost prikupljanja (odgovarajuća privola ili zakonska pravna osnova).
+                    * **Pravo na zaborav:** Sustav omogućuje trajno, nepovratno brisanje pojedinačnih uzoraka ili cjelokupnih profila osoba iz baze podataka jednim klikom.
+
+                    ---
+
+                    ### 🇪🇺 Usklađenost sa Zakonom o umjetnoj inteligenciji (EU AI Act)
+                    * **Klasifikacija sustava:** ArgusFace Studio namijenjen je za privatnu i internu poslovnu upotrebu (npr. organizacija arhive fotografija, evidencija prisutnosti i verifikacija u kontroliranim privatnim prostorima).
+                    * **Ograničenje namjene:** Sustav nije namijenjen niti licenciran za neovlašteno masovno biometrijsko profiliranje ili prepoznavanje u stvarnom vremenu na javno dostupnim površinama.
+                    """
+                )
+
 
     # ------------------ EVENT HANDLERS ------------------
     batch_naming_mode.change(
@@ -3498,7 +3759,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[
             single_name_input, single_notes_input, btn_save_single, single_save_status,
             person_gallery, person_info_md, sample_delete_dropdown, manage_person_dropdown,
-            selected_person_avatar
+            selected_person_avatar,
+            edit_person_name, edit_person_notes, edit_person_status
         ],
         show_progress="hidden"
     )
@@ -3521,38 +3783,70 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[batch_status_md, manage_person_dropdown, existing_person_picker, db_table, db_stats_md]
     )
     
-    def on_analysis_param_change(image, threshold, draw_landmarks, blur_unknown, show_all_faces):
+    def _blur_flags(blur_mode: str):
+        """Convert blur_mode_radio value to (blur_unknown, blur_all) booleans."""
+        blur_unknown = blur_mode == "🔒 Zamuti nepoznata lica"
+        blur_all     = blur_mode == "🛡️ Zamuti sva lica (GDPR)"
+        return blur_unknown, blur_all
+
+    def on_analysis_param_change(image, threshold, draw_landmarks, blur_mode, show_all_faces, rec_faces):
         if image is None:
             return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
-        return recognize_faces(image, threshold, draw_landmarks, blur_unknown, show_all_faces=show_all_faces)
+        cached = None
+        if rec_faces and len(rec_faces) > 0:
+            cached = [r["raw_face"] for r in rec_faces if isinstance(r, dict) and "raw_face" in r]
+            if len(cached) != len(rec_faces):
+                cached = None
+        blur_unknown, blur_all = _blur_flags(blur_mode or "")
+        return recognize_faces(
+            image, threshold, draw_landmarks, blur_unknown,
+            blur_all=blur_all, show_all_faces=show_all_faces, cached_faces=cached
+        )
 
     def on_cards_filter_toggle(rec_faces, show_all):
         if not rec_faces:
             return generate_detection_cards_html([], show_all_faces=show_all)
         return generate_detection_cards_html(rec_faces, show_all_faces=show_all)
 
+    def on_recognize_action(image, threshold, draw_landmarks, blur_mode, show_all_faces):
+        blur_unknown, blur_all = _blur_flags(blur_mode or "")
+        return recognize_faces(
+            image, threshold, draw_landmarks, blur_unknown,
+            blur_all=blur_all, show_all_faces=show_all_faces, cached_faces=None
+        )
+
+    rec_inputs   = [input_img, threshold_slider, landmarks_chk, blur_mode_radio, cards_show_all_chk]
+    rec_outputs  = [annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+    param_inputs = [input_img, threshold_slider, landmarks_chk, blur_mode_radio, cards_show_all_chk, rec_faces_state]
+
     btn_recognize.click(
-        fn=recognize_faces,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
-        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+        fn=on_recognize_action,
+        inputs=rec_inputs,
+        outputs=rec_outputs
+    )
+
+    input_img.upload(
+        fn=on_recognize_action,
+        inputs=rec_inputs,
+        outputs=rec_outputs
     )
 
     landmarks_chk.change(
         fn=on_analysis_param_change,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
-        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+        inputs=param_inputs,
+        outputs=rec_outputs
     )
 
-    blur_chk.change(
+    blur_mode_radio.change(
         fn=on_analysis_param_change,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
-        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+        inputs=param_inputs,
+        outputs=rec_outputs
     )
 
     threshold_slider.release(
         fn=on_analysis_param_change,
-        inputs=[input_img, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
-        outputs=[annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html]
+        inputs=param_inputs,
+        outputs=rec_outputs
     )
 
     cards_show_all_chk.change(
@@ -3578,18 +3872,20 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
     def on_cam_source_change(st):
         is_video = st in ("YouTube / Web Video", "Lokalna Video Datoteka")
+        btn_label = "▶️ Pokreni Video" if is_video else "🎥 Pokreni Live Kameru"
         return (
             gr.update(visible=(st == "USB Web Kamera")),
             gr.update(visible=(st == "IP / RTSP Kamera za nadzor")),
             gr.update(visible=(st == "YouTube / Web Video")),
             gr.update(visible=(st == "Lokalna Video Datoteka")),
-            gr.update(visible=is_video)
+            gr.update(visible=is_video),
+            gr.update(value=btn_label)
         )
 
     cam_source_type.change(
         fn=on_cam_source_change,
         inputs=[cam_source_type],
-        outputs=[cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec]
+        outputs=[cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec, btn_launch_live]
     )
 
     cam_enable_log.change(
@@ -3654,21 +3950,50 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             manage_person_dropdown, person_gallery, person_info_md, sample_delete_dropdown,
             single_name_input, single_notes_input, btn_save_single, single_save_status,
             existing_person_picker,
-            selected_person_avatar
+            selected_person_avatar,
+            edit_person_name, edit_person_notes, edit_person_status
         ],
         show_progress="hidden"
     )
     
     manage_person_dropdown.change(
-        fn=view_person_details,
+        fn=on_manage_person_change,
         inputs=[manage_person_dropdown],
-        outputs=[person_gallery, person_info_md, sample_delete_dropdown]
+        outputs=[person_gallery, person_info_md, sample_delete_dropdown, edit_person_name, edit_person_notes, edit_person_status]
+    )
+
+    btn_save_person_edit.click(
+        fn=update_person_handler,
+        inputs=[manage_person_dropdown, edit_person_name, edit_person_notes],
+        outputs=[
+            edit_person_status,
+            db_table,
+            db_stats_md,
+            manage_person_dropdown,
+            existing_person_picker,
+            single_name_input,
+            single_notes_input,
+            person_info_md,
+            selected_person_avatar,
+            btn_save_single
+        ]
     )
     
     btn_delete_person.click(
         fn=delete_selected_person,
         inputs=[manage_person_dropdown],
-        outputs=[sample_action_status, manage_person_dropdown, existing_person_picker, db_table, db_stats_md, person_gallery, person_info_md]
+        outputs=[
+            sample_action_status,
+            manage_person_dropdown,
+            existing_person_picker,
+            db_table,
+            db_stats_md,
+            person_gallery,
+            person_info_md,
+            edit_person_name,
+            edit_person_notes,
+            edit_person_status
+        ]
     )
     
     btn_delete_sample.click(
@@ -3725,7 +4050,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
     btn_send_to_rec.click(
         fn=on_send_snapshot_to_recognition,
-        inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_chk, cards_show_all_chk],
+        inputs=[selected_snap_dropdown, threshold_slider, landmarks_chk, blur_mode_radio, cards_show_all_chk],
         outputs=[input_img, annotated_out, crops_gallery_out, results_table, rec_status_md, unknown_face_dropdown, rec_faces_state, detection_cards_html, snap_action_status]
     )
 
@@ -3895,7 +4220,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
 def launch_app(desktop: bool = True, port: int = 7860):
     """
-    Pokreće UniFace Studio.
+    Pokreće ArgusFace Studio.
     - Ako je desktop=True i pywebview je dostupan: pokreće samostalni nativni prozor (WebView2)
       s čistim automatskim gašenjem svih servisa na zatvaranje prozora ('X').
     - Ako pywebview nije instaliran ili je proslijeđen argument --browser / --web:
@@ -3917,7 +4242,7 @@ def launch_app(desktop: bool = True, port: int = 7860):
 
     if has_webview:
         print("===================================================")
-        print("      UniFace Studio - Samostalni Radni Prozor      ")
+        print("      ArgusFace Studio - Samostalni Radni Prozor    ")
         print("===================================================")
         print("Pokrećem pozadinski servis...")
 
@@ -3957,7 +4282,7 @@ def launch_app(desktop: bool = True, port: int = 7860):
 
         # Otvori samostalni desktop prozor
         window = webview.create_window(
-            title="UniFace Studio - Sustav za biometrijsku identifikaciju i NVR nadzor",
+            title="ArgusFace Studio - Sustav za biometrijsku identifikaciju i NVR nadzor",
             url=url,
             width=1400,
             height=880,
@@ -3970,7 +4295,7 @@ def launch_app(desktop: bool = True, port: int = 7860):
         try:
             webview.start(icon=icon_path)
         finally:
-            print("\nZatvaranje UniFace Studio prozora i gašenje poslužitelja...")
+            print("\nZatvaranje ArgusFace Studio prozora i gašenje poslužitelja...")
             try:
                 demo.close()
             except Exception:
@@ -3978,7 +4303,7 @@ def launch_app(desktop: bool = True, port: int = 7860):
             os._exit(0)
     else:
         print("===================================================")
-        print("       UniFace Studio - Web Preglednik             ")
+        print("       ArgusFace Studio - Web Preglednik           ")
         print("===================================================")
         print(f"Pokrećem u web pregledniku na http://127.0.0.1:{port}...")
         demo.launch(

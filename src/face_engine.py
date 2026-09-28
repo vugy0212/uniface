@@ -7,43 +7,28 @@ _local_models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 if os.path.isdir(_local_models_dir):
     os.environ["UNIFACE_CACHE_DIR"] = _local_models_dir
 
-from uniface import FaceAnalyzer, RetinaFace, ArcFace, FairFace
+from uniface import FaceAnalyzer, RetinaFace, EdgeFace
+from uniface.recognition.edgeface import EdgeFaceWeights
 
-_analyzer_with_attr = None
-_analyzer_base = None
+_analyzer_instance = None
 
-def get_analyzer(device="CPU", with_attributes=True):
+def get_analyzer(device="CPU", with_attributes=False):
     """
-    Returns FaceAnalyzer. When with_attributes=False, FairFace model is NOT loaded,
-    saving ~300 MB of RAM and speeding up batch face embedding extraction.
+    Returns FaceAnalyzer using commercial-ready EdgeFace BASE recognizer (BSD-3-Clause)
+    and RetinaFace detector (MIT).
     """
-    global _analyzer_with_attr, _analyzer_base
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device.upper() == "CUDA" else ["CPUExecutionProvider"]
-    
-    if with_attributes:
-        if _analyzer_with_attr is None:
-            try:
-                detector = RetinaFace(confidence_threshold=0.45, providers=providers)
-                recognizer = ArcFace(providers=providers)
-                predictor = FairFace(providers=providers)
-                _analyzer_with_attr = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[predictor])
-            except Exception:
-                detector = RetinaFace(confidence_threshold=0.45, providers=["CPUExecutionProvider"])
-                recognizer = ArcFace(providers=["CPUExecutionProvider"])
-                predictor = FairFace(providers=["CPUExecutionProvider"])
-                _analyzer_with_attr = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[predictor])
-        return _analyzer_with_attr
-    else:
-        if _analyzer_base is None:
-            try:
-                detector = RetinaFace(confidence_threshold=0.45, providers=providers)
-                recognizer = ArcFace(providers=providers)
-                _analyzer_base = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
-            except Exception:
-                detector = RetinaFace(confidence_threshold=0.45, providers=["CPUExecutionProvider"])
-                recognizer = ArcFace(providers=["CPUExecutionProvider"])
-                _analyzer_base = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
-        return _analyzer_base
+    global _analyzer_instance
+    if _analyzer_instance is None:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device.upper() == "CUDA" else ["CPUExecutionProvider"]
+        try:
+            detector = RetinaFace(confidence_threshold=0.45, providers=providers)
+            recognizer = EdgeFace(model_name=EdgeFaceWeights.BASE, providers=providers)
+            _analyzer_instance = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
+        except Exception:
+            detector = RetinaFace(confidence_threshold=0.45, providers=["CPUExecutionProvider"])
+            recognizer = EdgeFace(model_name=EdgeFaceWeights.BASE, providers=["CPUExecutionProvider"])
+            _analyzer_instance = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
+    return _analyzer_instance
 
 def crop_face(image: np.ndarray, bbox, margin_ratio=0.25):
     h, w = image.shape[:2]
@@ -59,7 +44,7 @@ def crop_face(image: np.ndarray, bbox, margin_ratio=0.25):
     
     return image[y1:y2, x1:x2].copy()
 
-def extract_faces_from_image(image_bgr: np.ndarray, device="CPU", with_attributes=True):
+def extract_faces_from_image(image_bgr: np.ndarray, device="CPU", with_attributes=False):
     analyzer = get_analyzer(device, with_attributes=with_attributes)
     faces = analyzer.analyze(image_bgr)
     
@@ -266,14 +251,20 @@ def get_face_index(all_samples=None) -> FaceIndex:
     global _face_index
     if _face_index is None:
         if all_samples is None:
-            import db
+            try:
+                import db
+            except ImportError:
+                from src import db
             all_samples = db.get_cached_embeddings()
         _face_index = FaceIndex(all_samples)
     return _face_index
 
 # Auto-register callback with db to invalidate cache when DB changes
 try:
-    import db
+    try:
+        import db
+    except ImportError:
+        from src import db
     db.register_cache_invalidation_callback(invalidate_face_index)
 except Exception:
     pass
@@ -312,9 +303,13 @@ def match_face(query_embedding: np.ndarray, profiles=None, threshold=0.50):
     return get_face_index().match(query_embedding, threshold)
 
 def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, threshold=0.50,
-                         draw_landmarks=True, blur_unknown=False, device="CPU", face_index=None):
+                         draw_landmarks=False, blur_unknown=False, blur_all=False, device="CPU", face_index=None,
+                         cached_faces=None):
     annotated = image_bgr.copy()
-    faces_data = extract_faces_from_image(image_bgr, device)
+    if cached_faces is not None and len(cached_faces) > 0:
+        faces_data = cached_faces
+    else:
+        faces_data = extract_faces_from_image(image_bgr, device)
     
     if face_index is None:
         if all_samples is not None:
@@ -355,19 +350,25 @@ def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, 
             label = f"[#{f_num}] Nepoznato ({sim_pct:.1f}%)"
             badge = "❌ Nepoznat"
             
-        if blur_unknown and not is_known:
+        # 1. Apply high-grade privacy blur if requested
+        should_blur = bool(blur_all) or (bool(blur_unknown) and not is_known)
+        if should_blur:
             fx1, fy1 = max(0, x1), max(0, y1)
             fx2, fy2 = min(img_w, x2), min(img_h, y2)
             sub = annotated[fy1:fy2, fx1:fx2]
             if sub.size > 0:
-                ksize = max(15, (fx2 - fx1) // 3 * 2 + 1)
-                blurred = cv2.GaussianBlur(sub, (ksize, ksize), 30)
+                bw, bh = fx2 - fx1, fy2 - fy1
+                factor = max(8, min(bw, bh) // 8)
+                small = cv2.resize(sub, (max(1, bw // factor), max(1, bh // factor)), interpolation=cv2.INTER_LINEAR)
+                mosaic = cv2.resize(small, (bw, bh), interpolation=cv2.INTER_NEAREST)
+                ksize = max(15, (bw // 6) * 2 + 1)
+                blurred = cv2.GaussianBlur(mosaic, (ksize, ksize), 0)
                 annotated[fy1:fy2, fx1:fx2] = blurred
 
-        # Draw clean border box
+        # 2. Draw clean border box
         cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
         
-        # Position label: If near top of image (y1 < 28), draw INSIDE box to prevent cut-off and overlapping
+        # 3. Position label: If near top of image (y1 < 28), draw INSIDE box to prevent cut-off and overlapping
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.50
         thickness = 1
@@ -386,11 +387,27 @@ def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, 
         cv2.rectangle(annotated, (x1, lbl_y1), (lbl_x2, lbl_y2), box_color, -1)
         cv2.putText(annotated, label, (x1 + 4, text_baseline), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
         
-        # Draw landmarks if requested
-        if draw_landmarks and face["landmarks"]:
-            for pt in face["landmarks"]:
-                px, py = int(pt[0]), int(pt[1])
-                cv2.circle(annotated, (px, py), 2, (0, 255, 255), -1)
+        # 4. Draw landmarks if requested (visible biometric geometry wireframe + scaled dots)
+        if draw_landmarks and face.get("landmarks") is not None and len(face["landmarks"]) > 0:
+            pts = face["landmarks"]
+            face_w = max(1, x2 - x1)
+            pt_r = max(4, int(round(face_w * 0.016)))
+            line_w = max(1, int(round(face_w * 0.006)))
+            
+            pts_int = [(int(p[0]), int(p[1])) for p in pts]
+            if len(pts_int) >= 5:
+                le, re, nose, lm, rm = pts_int[:5]
+                mesh_col = (255, 200, 0) # High-tech biometric cyan in BGR
+                cv2.line(annotated, le, re, mesh_col, line_w, cv2.LINE_AA)
+                cv2.line(annotated, le, nose, mesh_col, line_w, cv2.LINE_AA)
+                cv2.line(annotated, re, nose, mesh_col, line_w, cv2.LINE_AA)
+                cv2.line(annotated, nose, lm, mesh_col, line_w, cv2.LINE_AA)
+                cv2.line(annotated, nose, rm, mesh_col, line_w, cv2.LINE_AA)
+                cv2.line(annotated, lm, rm, mesh_col, line_w, cv2.LINE_AA)
+                
+            for px, py in pts_int:
+                cv2.circle(annotated, (px, py), pt_r + 2, (15, 23, 42), -1, cv2.LINE_AA)
+                cv2.circle(annotated, (px, py), pt_r, (0, 255, 255), -1, cv2.LINE_AA)
                 
         results.append({
             "index": f_num,
@@ -406,7 +423,9 @@ def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, 
             "race": str(face["race"]) if face["race"] is not None else "-",
             "bbox": str(face["bbox"]),
             "crop_bgr": face["crop_bgr"],
-            "embedding": face["embedding"]
+            "embedding": face["embedding"],
+            "landmarks": face.get("landmarks"),
+            "raw_face": face
         })
         
     return annotated, results

@@ -125,9 +125,19 @@ def get_or_create_person(name: str, notes: str = "") -> int:
     return person_id
 
 def update_person(person_id: int, name: str, notes: str = ""):
+    name = name.strip()
+    if not name:
+        raise ValueError("Ime osobe ne smije biti prazno.")
     with get_db() as conn:
+        existing = conn.execute("SELECT id FROM persons WHERE LOWER(name) = LOWER(?) AND id != ?", (name, person_id)).fetchone()
+        if existing:
+            raise ValueError(f"Osoba s imenom '{name}' već postoji u bazi (ID: {existing['id']}).")
+        old = conn.execute("SELECT name FROM persons WHERE id = ?", (person_id,)).fetchone()
+        old_name = old["name"] if old else None
         with conn:
-            conn.execute("UPDATE persons SET name = ?, notes = ? WHERE id = ?", (name.strip(), notes.strip(), person_id))
+            conn.execute("UPDATE persons SET name = ?, notes = ? WHERE id = ?", (name, notes.strip(), person_id))
+            if old_name and old_name != name:
+                conn.execute("UPDATE detection_events SET person_name = ? WHERE person_name = ?", (name, old_name))
     invalidate_cache()
 
 def add_face_sample(person_id: int, image_path: str, crop_path: str, embedding: np.ndarray, confidence: float = 1.0) -> int:
