@@ -13,7 +13,8 @@ def load_settings() -> dict:
     defaults = {
         "snapshot_dir": DEFAULT_SNAPSHOT_DIR,
         "save_mode": "annotated", # 'annotated' (with HUD & boxes) or 'both' or 'clean'
-        "threshold": 0.45
+        "threshold": 0.45,
+        "gdpr_retention_days": 30
     }
     if not os.path.isfile(SETTINGS_FILE):
         return defaults
@@ -132,3 +133,89 @@ def open_folder_in_explorer(target_folder: str = None) -> tuple[bool, str]:
             return True, f"Otvorena mapa: {folder}"
     except Exception as e:
         return False, f"Greška pri otvaranju Explorera: {e}"
+
+def get_retention_days() -> int:
+    cfg = load_settings()
+    return int(cfg.get("gdpr_retention_days", 30))
+
+def set_retention_days(days: int) -> bool:
+    cfg = load_settings()
+    cfg["gdpr_retention_days"] = int(days)
+    return save_settings(cfg)
+
+def execute_gdpr_retention(retention_days: int = None) -> dict:
+    """
+    Executes unified GDPR retention cleanup:
+    1. Purges database detection_events and corresponding JPEG crops/snapshots older than retention_days.
+    2. Purges NVR recordings older than retention_days.
+    3. Cleans up any unreferenced/orphan snapshot files older than retention_days.
+    Returns: {
+        "retention_days": int,
+        "deleted_events": int,
+        "deleted_snapshots": int,
+        "deleted_videos": int,
+        "total_freed_bytes": int,
+        "freed_mb": float,
+        "status_message": str
+    }
+    """
+    import time
+    if retention_days is None:
+        retention_days = get_retention_days()
+        
+    if retention_days <= 0:
+        return {
+            "retention_days": 0,
+            "deleted_events": 0,
+            "deleted_snapshots": 0,
+            "deleted_videos": 0,
+            "total_freed_bytes": 0,
+            "freed_mb": 0.0,
+            "status_message": "ℹ️ Politika zadržavanja je postavljena na trajno čuvanje (automatsko brisanje isključeno)."
+        }
+        
+    try:
+        from . import db
+        from . import nvr_recorder
+    except ImportError:
+        import db
+        import nvr_recorder
+    
+    # 1. Purge DB events and their files
+    db_res = db.purge_old_detection_events(retention_days)
+    
+    # 2. Purge NVR videos
+    recordings_dir = getattr(nvr_recorder, "DEFAULT_RECORDINGS_DIR", os.path.join(DATA_DIR, "recordings"))
+    nvr_res = nvr_recorder.cleanup_recordings_by_age(recordings_dir, retention_days)
+    
+    # 3. Clean any orphaned snapshot files in snapshots_dir older than retention_days
+    snap_dir = get_snapshot_dir()
+    cutoff_time = time.time() - (retention_days * 86400)
+    orphan_snaps = 0
+    orphan_bytes = 0
+    if os.path.isdir(snap_dir):
+        for fname in os.listdir(snap_dir):
+            if fname.lower().endswith((".jpg", ".jpeg", ".png")):
+                fpath = os.path.join(snap_dir, fname)
+                try:
+                    if os.path.getmtime(fpath) < cutoff_time:
+                        sz = os.path.getsize(fpath)
+                        os.remove(fpath)
+                        orphan_snaps += 1
+                        orphan_bytes += sz
+                except Exception:
+                    pass
+                    
+    total_freed = db_res.get("freed_bytes", 0) + nvr_res.get("freed_bytes", 0) + orphan_bytes
+    total_snapshots = db_res.get("deleted_files", 0) + orphan_snaps
+    freed_mb = round(total_freed / (1024 * 1024), 2)
+    
+    return {
+        "retention_days": retention_days,
+        "deleted_events": db_res.get("deleted_events", 0),
+        "deleted_snapshots": total_snapshots,
+        "deleted_videos": nvr_res.get("deleted_videos", 0),
+        "total_freed_bytes": total_freed,
+        "freed_mb": freed_mb,
+        "status_message": f"✅ **GDPR rotacija uspješno izvršena** (starije od {retention_days} dana):\n* Obrisano događaja u evidenciji: **{db_res.get('deleted_events', 0)}**\n* Obrisano slika kadrova: **{total_snapshots}**\n* Obrisano NVR video snimaka: **{nvr_res.get('deleted_videos', 0)}**\n* Oslobođeno prostora na disku: **{freed_mb} MB**"
+    }

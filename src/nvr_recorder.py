@@ -52,6 +52,38 @@ def cleanup_old_recordings(recordings_dir: str, max_storage_gb: float = 20.0):
             except Exception as e:
                 print(f"[NVR CLEANUP] Greška pri brisanju: {e}")
 
+def cleanup_recordings_by_age(recordings_dir: str = DEFAULT_RECORDINGS_DIR, retention_days: int = 30) -> dict:
+    """
+    GDPR retention cleanup: Deletes all NVR video recordings older than retention_days.
+    Returns: {"deleted_videos": int, "freed_bytes": int}
+    """
+    if not os.path.isdir(recordings_dir) or retention_days <= 0:
+        return {"deleted_videos": 0, "freed_bytes": 0}
+        
+    cutoff_time = time.time() - (retention_days * 86400)
+    deleted_count = 0
+    freed_bytes = 0
+    
+    for root, _, files in os.walk(recordings_dir):
+        for f in files:
+            if f.lower().endswith((".mp4", ".avi", ".mkv")):
+                fpath = os.path.join(root, f)
+                try:
+                    fmtime = os.path.getmtime(fpath)
+                    if fmtime < cutoff_time:
+                        fsize = os.path.getsize(fpath)
+                        os.remove(fpath)
+                        deleted_count += 1
+                        freed_bytes += fsize
+                        print(f"[GDPR RETENTION] Obrisana stara NVR snimka: {os.path.basename(fpath)}")
+                except Exception as e:
+                    print(f"[GDPR RETENTION] Greška pri brisanju snimke {fpath}: {e}")
+                    
+    return {
+        "deleted_videos": deleted_count,
+        "freed_bytes": freed_bytes
+    }
+
 
 class NVRChannelRecorder:
     """

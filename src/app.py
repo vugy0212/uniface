@@ -1012,6 +1012,28 @@ def handle_import_backup(file_obj):
 def handle_refresh_sysinfo():
     return hardware.get_system_report_markdown(DATA_DIR)
 
+def _parse_retention_days(label_str: str) -> int:
+    if not label_str or "Trajno" in label_str:
+        return 0
+    import re
+    m = re.search(r"(\d+)", label_str)
+    return int(m.group(1)) if m else 30
+
+def handle_retention_period_change(val: str) -> str:
+    days = _parse_retention_days(val)
+    config.set_retention_days(days)
+    if days == 0:
+        return "ℹ️ Politika zadržavanja je postavljena na **trajno čuvanje**. Automatsko brisanje starih podataka je isključeno."
+    return f"⚙️ Politika zadržavanja ažurirana: podaci stariji od **{days} dana** bit će automatski uklonjeni."
+
+def handle_run_retention_cleanup(val: str) -> tuple:
+    days = _parse_retention_days(val)
+    if days == 0:
+        return "⚠️ Odaberite period zadržavanja (15, 30, 60 ili 90 dana) za pokretanje čišćenja.", hardware.get_system_report_markdown(DATA_DIR)
+    res = config.execute_gdpr_retention(days)
+    sys_report = hardware.get_system_report_markdown(DATA_DIR)
+    return res["status_message"], sys_report
+
 def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", youtube_url="", video_file=None, start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_min=5):
     live_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_cam.py")
     if not os.path.exists(live_script):
@@ -2809,6 +2831,22 @@ input[type="range"] {
     margin-bottom: 8px !important;
     font-weight: 600 !important;
 }
+
+/* Retention policy card */
+.retention-card {
+    border: 1px solid rgba(16, 185, 129, 0.35) !important;
+    background: rgba(10, 30, 35, 0.65) !important;
+    border-radius: 12px !important;
+    padding: 14px 16px !important;
+    margin-top: 14px !important;
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.08) !important;
+}
+
+.retention-card h4 {
+    color: #10b981 !important;
+    margin-bottom: 8px !important;
+    font-weight: 600 !important;
+}
 """
 
 HEAD_DARK_JS = """
@@ -3646,6 +3684,42 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
                         backup_import_status = gr.Markdown("")
 
+                    with gr.Group(elem_classes=["cyber-card", "retention-card"]):
+                        gr.Markdown("#### 🛡️ GDPR Upravljanje podacima i automatska rotacija (Data Retention)")
+                        gr.Markdown(
+                            "Uskladite pohranu sa zakonskim načelom smanjenja količine podataka (*Storage limitation*, GDPR Čl. 5(1)(e)). "
+                            "Automatski ili ručno očistite zapise prolazaka, JPEG kadrove i video snimke starije od zadanog razdoblja."
+                        )
+                        init_ret_days = config.get_retention_days()
+                        ret_choices = [
+                            "15 dana (Preporučeno za video nadzor / AZOP)",
+                            "30 dana (Standardno poslovno čuvanje)",
+                            "60 dana",
+                            "90 dana",
+                            "Trajno (Bez automatskog brisanja)"
+                        ]
+                        init_choice = ret_choices[1]
+                        if init_ret_days == 15:
+                            init_choice = ret_choices[0]
+                        elif init_ret_days == 30:
+                            init_choice = ret_choices[1]
+                        elif init_ret_days == 60:
+                            init_choice = ret_choices[2]
+                        elif init_ret_days == 90:
+                            init_choice = ret_choices[3]
+                        elif init_ret_days <= 0:
+                            init_choice = ret_choices[4]
+
+                        with gr.Row():
+                            retention_period_dropdown = gr.Dropdown(
+                                label="Politika zadržavanja podataka",
+                                choices=ret_choices,
+                                value=init_choice,
+                                scale=3
+                            )
+                            btn_run_retention = gr.Button("🧹 Očisti stare podatke odmah", variant="secondary", scale=2, elem_classes=["btn-cyber-primary"])
+                        retention_status_md = gr.Markdown("")
+
             gr.Markdown("---")
             with gr.Accordion("⚖️ Pravne napomene, licence i regulatorna usklađenost (GDPR & EU AI Act)", open=True, elem_classes=["cyber-accordion"]):
                 gr.Markdown(
@@ -4148,6 +4222,18 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         ]
     )
 
+    retention_period_dropdown.change(
+        fn=handle_retention_period_change,
+        inputs=[retention_period_dropdown],
+        outputs=[retention_status_md]
+    )
+
+    btn_run_retention.click(
+        fn=handle_run_retention_cleanup,
+        inputs=[retention_period_dropdown],
+        outputs=[retention_status_md, system_info_md]
+    )
+
     # ------------------ EVENT HANDLERS: TAB 6 PHOTO SORTER ------------------
     btn_browse_input_folder.click(
         fn=on_browse_input_folder,
@@ -4231,6 +4317,14 @@ def launch_app(desktop: bool = True, port: int = 7860):
 
     if "--browser" in sys.argv or "--web" in sys.argv:
         desktop = False
+
+    # Tiho automatsko GDPR čišćenje pri svakom startu aplikacije
+    try:
+        ret_days = config.get_retention_days()
+        if ret_days > 0:
+            config.execute_gdpr_retention(ret_days)
+    except Exception as e:
+        print(f"[GDPR RETENTION] Greška pri startnoj provjeri: {e}")
 
     has_webview = False
     if desktop:

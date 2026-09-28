@@ -318,6 +318,51 @@ def clear_detection_events():
                             pass
             conn.execute("DELETE FROM detection_events;")
 
+def purge_old_detection_events(retention_days: int) -> dict:
+    """
+    Purges detection events and associated snapshot/crop files older than retention_days.
+    Returns: {"deleted_events": int, "deleted_files": int, "freed_bytes": int}
+    """
+    if retention_days <= 0:
+        return {"deleted_events": 0, "deleted_files": 0, "freed_bytes": 0}
+        
+    cutoff_sql = f"-{int(retention_days)} days"
+    deleted_events = 0
+    deleted_files = 0
+    freed_bytes = 0
+    
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, crop_path, snapshot_path FROM detection_events WHERE created_at < datetime('now', ?)",
+            (cutoff_sql,)
+        ).fetchall()
+        
+        deleted_events = len(rows)
+        for r in rows:
+            for col in ("crop_path", "snapshot_path"):
+                fp = r[col]
+                if fp and os.path.exists(fp):
+                    try:
+                        sz = os.path.getsize(fp)
+                        os.remove(fp)
+                        deleted_files += 1
+                        freed_bytes += sz
+                    except Exception:
+                        pass
+                        
+        if deleted_events > 0:
+            with conn:
+                conn.execute(
+                    "DELETE FROM detection_events WHERE created_at < datetime('now', ?)",
+                    (cutoff_sql,)
+                )
+                
+    return {
+        "deleted_events": deleted_events,
+        "deleted_files": deleted_files,
+        "freed_bytes": freed_bytes
+    }
+
 def get_detection_stats():
     """Returns total count and unique persons count from detection events."""
     with get_db() as conn:
