@@ -318,7 +318,9 @@ def quick_add_face_to_db(selected_face_str, new_name, rec_faces):
     msg = f"✅ Lice [#{f_num}] uspješno dodano osobi **{person_name}** u bazu podataka!"
     choices = get_person_dropdown_choices()
     table_view, stats_view = refresh_database_view()
-    return msg, gr.update(choices=choices, value=None), gr.update(choices=choices, value=None), table_view, stats_view
+    samples = db.get_person_samples(person_id)
+    choice_val = f"{person_id}: {person_name} ({len(samples)} slika)"
+    return msg, gr.update(choices=choices, value=choice_val), gr.update(choices=choices, value=choice_val), table_view, stats_view
 
 # ---------------- POJEDINAČNI UNOS / OZNAČAVANJE LICA NA GRUPNOJ SLICI ----------------
 def find_face_at_coords(x, y, faces):
@@ -446,14 +448,18 @@ def set_active_face(target_index, state):
     
     return annotated_rgb, crop_rgb, info, gr.update(value=sel_choice), state
 
-def on_single_image_uploaded(image, state):
+def on_single_image_uploaded(image, current_name, state):
     new_state = {"faces": [], "bgr": None, "selected_idx": 1, "saved_indices": set()}
+    c_name = str(current_name or "").strip()
+    default_btn = f"💾 Spremi dodatno lice za: {c_name}" if c_name else "💾 Spremi odabrano lice u bazu"
+    
     if image is None:
         return (
             gr.update(value=None, visible=False),
             gr.update(value=[], visible=False),
             gr.update(choices=[], value=None, visible=False),
             None, "Učitajte fotografiju za automatsku detekciju lica.",
+            gr.update(value=default_btn),
             new_state
         )
         
@@ -464,6 +470,7 @@ def on_single_image_uploaded(image, state):
             gr.update(value=[], visible=False),
             gr.update(choices=[], value=None, visible=False),
             None, f"❌ Greška pri čitanju slike: {err}",
+            gr.update(value=default_btn),
             new_state
         )
         
@@ -474,6 +481,7 @@ def on_single_image_uploaded(image, state):
             gr.update(value=[], visible=False),
             gr.update(choices=[], value=None, visible=False),
             None, "⚠️ Na slici NIJE pronađeno lice. Pokušajte s jasnijom slikom.",
+            gr.update(value=default_btn),
             new_state
         )
         
@@ -491,7 +499,13 @@ def on_single_image_uploaded(image, state):
     
     f1 = faces[0]
     crop1_rgb = cv2.cvtColor(f1["crop_bgr"], cv2.COLOR_BGR2RGB)
-    info1 = f"👥 Pronađeno **{len(faces)}** lica na slici! Trenutno je odabrano: **Lice #1**."
+    if c_name:
+        info1 = f"👥 Pronađeno **{len(faces)}** lica na slici! 🎯 Spremno za spremanje uzorka za osobu: **{c_name}**."
+        btn_text = f"💾 Spremi dodatno lice za: {c_name}"
+    else:
+        info1 = f"👥 Pronađeno **{len(faces)}** lica na slici! Trenutno je odabrano: **Lice #1**."
+        btn_text = "💾 Spremi odabrano lice u bazu"
+        
     if f1.get("age") is not None:
         info1 += f" | Procjena dobi: ~{int(f1['age'])} god, Spol: {f1['gender']}"
         
@@ -501,6 +515,7 @@ def on_single_image_uploaded(image, state):
         gr.update(choices=choices, value=sel_choice, visible=True),
         crop1_rgb,
         info1,
+        gr.update(value=btn_text),
         new_state
     )
 
@@ -546,14 +561,18 @@ def save_single_person(name, notes, face_choice_str, state):
         return (
             "⚠️ Ime osobe je obavezno!",
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(),
             state
         )
     if not faces:
         return (
             "⚠️ Niste učitali sliku ili na slici nema lica!",
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(),
             state
         )
         
@@ -597,11 +616,33 @@ def save_single_person(name, notes, face_choice_str, state):
             next_idx = f["display_index"]
             break
             
+    choice_str = f"{person_id}: {person_name} ({len(samples)} slika)"
+    
     if next_idx is not None:
         state["selected_idx"] = next_idx
-        msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}**! Sada upišite ime za sljedeću osobu (**Lice #{next_idx}**)."
+        msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}**! Sada upišite ime za sljedeću osobu sa slike (**Lice #{next_idx}**)."
+        name_out = ""
+        notes_out = ""
+        btn_text = "💾 Spremi odabrano lice u bazu"
+        picker_val = None
+        avatar_html = render_person_avatar_html(None)
+        edit_name = ""
+        edit_notes = ""
     else:
-        msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}**! Sva lica sa slike ({len(faces)}) su unesena u bazu!"
+        # Sve osobe sa slike su spremljene ili je pojedinačni portret (najčešći slučaj)
+        # Osoba ostaje trajno selektirana radi fluidnog unosa dodatnih slika!
+        state["selected_idx"] = 1
+        msg = (
+            f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}** (ukupno {len(samples)} slika)!\n"
+            f"✨ **{person_name}** ostaje odabran(a) – samo učitajte sljedeću sliku ili snimite kamerom i kliknite **'Spremi dodatno lice'** za novi uzorak."
+        )
+        name_out = person_name
+        notes_out = notes or ""
+        btn_text = f"💾 Spremi dodatno lice za: {person_name}"
+        picker_val = choice_str
+        avatar_html = render_person_avatar_html(person_id)
+        edit_name = person_name
+        edit_notes = notes or ""
         
     annotated_rgb = render_annotated_group_image(
         bgr, faces,
@@ -631,15 +672,20 @@ def save_single_person(name, notes, face_choice_str, state):
         
     return (
         msg,
-        gr.update(choices=choices_db, value=f"{person_id}: {person_name} ({len(samples)} slika)"),
-        gr.update(choices=choices_db, value=None),
+        gr.update(choices=choices_db, value=choice_str),
+        gr.update(choices=choices_db, value=picker_val),
         table_view,
         stats_view,
         annotated_rgb,
         crop_rgb,
         info,
         gr.update(choices=new_choices, value=sel_choice),
-        "",  # clear name field so user can type next person's name
+        name_out,
+        notes_out,
+        btn_text,
+        avatar_html,
+        edit_name,
+        edit_notes,
         new_gallery,
         state
     )
@@ -838,8 +884,8 @@ def on_table_select(table_data, evt: gr.SelectData):
     
     name_val = p["name"]
     notes_val = p["notes"] or ""
-    btn_text = f"💾 Spremi odabrano lice za: {p['name']}"
-    status_msg = f"📌 Odabrano za unos: **{p['name']}** ({p['sample_count']} slika). Odaberite lice sa slike i kliknite Spremi."
+    btn_text = f"💾 Spremi dodatno lice za: {p['name']}"
+    status_msg = f"📌 Odabrano za unos novih slika: **{p['name']}** ({p['sample_count']} slika). Učitajte sliku i kliknite Spremi."
     
     return (
         choice, gallery, info, sample_drop,
@@ -870,8 +916,8 @@ def on_existing_person_picked(selected_choice):
         
     name_val = p["name"]
     notes_val = p["notes"] or ""
-    btn_text = f"💾 Spremi odabrano lice za: {p['name']}"
-    status_msg = f"📌 Odabrano za unos: **{p['name']}** ({p['sample_count']} slika). Odaberite lice sa slike i kliknite Spremi."
+    btn_text = f"💾 Spremi dodatno lice za: {p['name']}"
+    status_msg = f"📌 Odabrano za unos novih slika: **{p['name']}** ({p['sample_count']} slika). Učitajte sliku i kliknite Spremi."
     choice_str = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
     gallery, info, sample_drop = view_person_details(choice_str)
     avatar_html = render_person_avatar_html(p["id"])
@@ -3788,13 +3834,14 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     # 1. Image uploaded in Single Enroll -> extracts faces and renders visual indicators
     single_img_input.change(
         fn=on_single_image_uploaded,
-        inputs=[single_img_input, single_enroll_state],
+        inputs=[single_img_input, single_name_input, single_enroll_state],
         outputs=[
             single_annotated_preview,
             single_crops_gallery,
             single_face_selector,
             single_preview_crop,
             single_preview_info,
+            btn_save_single,
             single_enroll_state
         ]
     )
@@ -3820,7 +3867,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[single_annotated_preview, single_preview_crop, single_preview_info, single_face_selector, single_enroll_state]
     )
     
-    # 5. Save single face -> advances to next unsaved face & clears name field
+    # 5. Save single face -> advances to next unsaved face & keeps person selected for fluid multi-photo enrollment
     btn_save_single.click(
         fn=save_single_person,
         inputs=[single_name_input, single_notes_input, single_face_selector, single_enroll_state],
@@ -3835,6 +3882,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_preview_info,
             single_face_selector,
             single_name_input,
+            single_notes_input,
+            btn_save_single,
+            selected_person_avatar,
+            edit_person_name,
+            edit_person_notes,
             single_crops_gallery,
             single_enroll_state
         ]
@@ -3842,6 +3894,19 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         fn=view_person_details,
         inputs=[manage_person_dropdown],
         outputs=[person_gallery, person_info_md, sample_delete_dropdown]
+    )
+
+    # 5b. Update save button label dynamically when typing name and leaving input
+    def on_name_input_blur(name_val):
+        n = str(name_val or "").strip()
+        if n:
+            return f"💾 Spremi dodatno lice za: {n}"
+        return "💾 Spremi odabrano lice u bazu"
+
+    single_name_input.blur(
+        fn=on_name_input_blur,
+        inputs=[single_name_input],
+        outputs=[btn_save_single]
     )
     
     # 6. Clear single form
