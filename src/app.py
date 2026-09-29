@@ -837,13 +837,14 @@ def render_person_avatar_html(person_id):
             pass
     return empty_html
 
-def on_table_select(table_data, evt: gr.SelectData):
+def on_table_select(table_data, is_multi_mode, current_batch, evt: gr.SelectData):
     if evt.index is None:
         return (
             gr.update(), [], "", gr.update(),
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             gr.update(), render_person_avatar_html(None),
-            gr.update(), gr.update(), ""
+            gr.update(), gr.update(), "",
+            gr.update(), gr.update(), gr.update()
         )
         
     row_idx = evt.index[0]
@@ -866,7 +867,8 @@ def on_table_select(table_data, evt: gr.SelectData):
             gr.update(), [], "", gr.update(),
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             gr.update(), render_person_avatar_html(None),
-            gr.update(), gr.update(), ""
+            gr.update(), gr.update(), "",
+            gr.update(), gr.update(), gr.update()
         )
         
     p = db.get_person(person_id)
@@ -875,10 +877,30 @@ def on_table_select(table_data, evt: gr.SelectData):
             gr.update(), [], "", gr.update(),
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             gr.update(), render_person_avatar_html(None),
-            gr.update(), gr.update(), ""
+            gr.update(), gr.update(), "",
+            gr.update(), gr.update(), gr.update()
         )
         
     choice = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
+
+    if is_multi_mode:
+        batch_list = list(current_batch or [])
+        if choice in batch_list:
+            batch_list.remove(choice)
+            status_txt = f"➖ Uklonjeno s popisa za brisanje: **{p['name']}** (Preostalo označeno: **{len(batch_list)}** osoba)"
+        else:
+            batch_list.append(choice)
+            status_txt = f"➕ Označeno za brisanje: **{p['name']}** (Ukupno označeno: **{len(batch_list)}** osoba)"
+            
+        btn_label = f"🗑️ Obriši označene osobe ({len(batch_list)})"
+        return (
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(),
+            batch_list, btn_label, status_txt
+        )
+
     gallery, info, sample_drop = view_person_details(choice)
     avatar_html = render_person_avatar_html(p["id"])
     
@@ -892,7 +914,8 @@ def on_table_select(table_data, evt: gr.SelectData):
         name_val, notes_val, btn_text, status_msg,
         gr.update(value=choice),
         avatar_html,
-        name_val, notes_val, ""
+        name_val, notes_val, "",
+        gr.update(), gr.update(), gr.update()
     )
 
 def on_existing_person_picked(selected_choice):
@@ -1143,6 +1166,115 @@ def handle_execute_wipe(confirmed: bool):
         empty_avatar,
         sys_report
     )
+
+# ---------------- BATCH DELETE (VIŠESTRUKI ODABIR I BRISANJE) ----------------
+def handle_open_batch_delete_modal(selected_items):
+    if not selected_items:
+        return gr.update(visible=False), "", "⚠️ Niste označili niti jednu osobu za brisanje!", gr.update()
+    
+    count = len(selected_items)
+    names = []
+    for item in selected_items:
+        name_part = item.split(":")[1].split("(")[0].strip() if ":" in item else item
+        names.append(f"• **{name_part}**")
+        
+    if len(names) > 25:
+        names_preview = "\n".join(names[:25]) + f"\n\n*... i još {len(names) - 25} drugih osoba.*"
+    else:
+        names_preview = "\n".join(names)
+        
+    summary_md = (
+        f"📋 **Označeno za brisanje:** Ukupno **{count}** osoba:\n\n"
+        f"{names_preview}\n\n"
+        f"⚠️ Potvrdom će sve označene osobe i njihove fotografije biti trajno uklonjene iz sustava."
+    )
+    btn_label = f"🔥 Potvrdi i obriši ({count} osoba)"
+    return gr.update(visible=True), summary_md, "", gr.update(value=btn_label)
+
+def handle_close_batch_delete_modal():
+    return gr.update(visible=False)
+
+def handle_execute_batch_delete(selected_items):
+    if not selected_items:
+        return (
+            gr.update(visible=False),
+            "⚠️ Nema označenih osoba.",
+            [],
+            "🗑️ Obriši označene osobe (0)",
+            gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update()
+        )
+        
+    pids = []
+    for item in selected_items:
+        pid = parse_person_id(item)
+        if pid is not None:
+            pids.append(pid)
+            
+    deleted_count = 0
+    for pid in pids:
+        try:
+            db.delete_person(pid)
+            deleted_count += 1
+        except Exception:
+            pass
+            
+    face_engine.get_face_index(force_refresh=True)
+    
+    choices = get_person_dropdown_choices()
+    table_view, stats_view = refresh_database_view()
+    sys_report = hardware.get_system_report_markdown(DATA_DIR)
+    empty_avatar = render_person_avatar_html(None)
+    
+    success_msg = f"🗑️ **Uspješno obrisano {deleted_count} osoba** i svi njihovi biometrijski uzorci!"
+    
+    return (
+        gr.update(visible=False),
+        success_msg,
+        gr.update(choices=choices, value=[]),
+        "🗑️ Obriši označene osobe (0)",
+        table_view,
+        stats_view,
+        gr.update(choices=choices, value=None),
+        gr.update(choices=choices, value=None),
+        [],
+        "",
+        "",
+        "",
+        empty_avatar,
+        sys_report
+    )
+
+def handle_select_all_filtered(search_query, current_selected):
+    all_persons = db.get_all_persons()
+    q = (search_query or "").strip().lower()
+    if q:
+        filtered = [
+            p for p in all_persons
+            if q in p["name"].lower() or q == str(p["id"]) or q in (p["notes"] or "").lower()
+        ]
+    else:
+        filtered = all_persons
+        
+    selected_set = set(current_selected or [])
+    for p in filtered:
+        item = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
+        selected_set.add(item)
+        
+    res = list(selected_set)
+    btn_label = f"🗑️ Obriši označene osobe ({len(res)})"
+    status = f"☑️ Označeno **{len(filtered)}** osoba iz rezultata pretrage (Ukupno označeno: **{len(res)}**)."
+    return res, btn_label, status
+
+def handle_clear_batch_selection():
+    return [], "🗑️ Obriši označene osobe (0)", "Odabir je poništen."
+
+def on_batch_selection_change(selected_items):
+    n = len(selected_items or [])
+    return f"🗑️ Obriši označene osobe ({n})"
 
 def _parse_retention_days(label_str: str) -> int:
     if not label_str or "Trajno" in label_str:
@@ -3065,6 +3197,29 @@ input[type="range"] {
     margin: auto !important;
     padding: 26px !important;
 }
+
+/* --- MULTI-SELECT BATCH DELETE TRAY --- */
+.multi-select-toggle-row {
+    background: rgba(13, 20, 36, 0.7) !important;
+    border: 1px solid rgba(56, 189, 248, 0.25) !important;
+    border-radius: 8px !important;
+    padding: 8px 14px !important;
+    margin: 8px 0 !important;
+}
+
+.multi-select-checkbox label {
+    font-weight: 600 !important;
+    color: #38bdf8 !important;
+}
+
+.batch-delete-tray {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.06) 0%, rgba(13, 20, 36, 0.9) 100%) !important;
+    border: 1px solid rgba(239, 68, 68, 0.35) !important;
+    border-radius: 10px !important;
+    padding: 14px 16px !important;
+    margin: 10px 0 !important;
+    box-shadow: 0 4px 18px rgba(239, 68, 68, 0.1) !important;
+}
 """
 
 HEAD_DARK_JS = """
@@ -3527,6 +3682,34 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         )
                         btn_clear_table_search = gr.Button("✖ Poništi", size="sm", scale=1, elem_classes=["btn-cyber-secondary"])
                         
+                    # Preklopnik za višestruki odabir (Grupno brisanje)
+                    with gr.Row(elem_classes=["multi-select-toggle-row"]):
+                        multi_select_mode_cb = gr.Checkbox(
+                            label="☑️ Omogući višestruki odabir u tablici (Grupno označavanje za brisanje)",
+                            value=False,
+                            interactive=True,
+                            elem_classes=["multi-select-checkbox"]
+                        )
+                    
+                    # Traka s označenim osobama i kontrolama za brisanje
+                    with gr.Group(visible=False, elem_classes=["batch-delete-tray"]) as batch_delete_tray:
+                        with gr.Row(equal_height=True):
+                            batch_selected_dropdown = gr.Dropdown(
+                                label="Označene osobe za grupno brisanje:",
+                                choices=get_person_dropdown_choices(),
+                                multiselect=True,
+                                value=[],
+                                interactive=True,
+                                scale=4,
+                                info="Kliknite na retke u tablici za dodavanje/uklanjanje, ili birajte izravno ovdje."
+                            )
+                            with gr.Column(scale=2):
+                                with gr.Row():
+                                    btn_select_all_filtered = gr.Button("☑️ Označi sve iz pretrage", size="sm", variant="secondary")
+                                    btn_clear_batch_selection = gr.Button("✖ Poništi odabir", size="sm", variant="secondary")
+                                btn_open_batch_delete_modal = gr.Button("🗑️ Obriši označene osobe (0)", size="md", variant="stop", elem_classes=["btn-cyber-danger"])
+                        batch_action_status = gr.Markdown("")
+
                     db_stats_md = gr.Markdown("")
                     db_table = gr.Dataframe(
                         headers=["ID", "Ime", "Broj slika", "Kvaliteta profila", "Bilješke", "Datum registracije"],
@@ -3637,6 +3820,26 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                     with gr.Row():
                         btn_cancel_wipe = gr.Button("✖️ Odustani (Zatvori prozor)", variant="secondary", scale=1)
                         btn_confirm_wipe = gr.Button("🔥 Potvrdi i trajno obriši", variant="stop", elem_classes=["btn-cyber-danger"], scale=1)
+
+            # ---------------- SKOČNI PROZOR (MODAL) ZA POTVRDU GRUPNOG BRISANJA ----------------
+            with gr.Group(visible=False, elem_classes=["cyber-modal-overlay"]) as batch_delete_modal:
+                with gr.Group(elem_classes=["cyber-modal-box"]):
+                    gr.Markdown(
+                        """
+                        ## 🗑️ POTVRDA GRUPNOG BRISANJA OSOBA
+                        ---
+                        **Jeste li sigurni da želite trajno obrisati sve označene osobe?**
+                        
+                        * ⚠️ Ova radnja nepovratno uklanja odabrane profile iz baze podataka.
+                        * 🧬 Svi njihovi 512-dimenzionalni biometrijski vektori bit će trajno obrisani.
+                        * 🖼️ Sve njihove povezane fotografije izreza (crops) bit će uklonjene s diska.
+                        * 🔄 FAISS vektorski indeks bit će automatski ažuriran.
+                        """
+                    )
+                    batch_delete_modal_summary = gr.Markdown("")
+                    with gr.Row():
+                        btn_cancel_batch_delete = gr.Button("✖️ Odustani / Zatvori", variant="secondary", scale=1)
+                        btn_confirm_batch_delete = gr.Button("🔥 Potvrdi i obriši", variant="stop", elem_classes=["btn-cyber-danger"], scale=1)
 
         # ------------------ TAB 3: SPREMLJENI KADROVI & VIDEO SNIMKE ------------------
         with gr.TabItem("📁 Spremljeni Kadrovi i Video Snimke") as tab_saved_media:
@@ -4306,16 +4509,17 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[manage_person_dropdown, existing_person_picker]
     )
     
-    # CLICKING ON TABLE AUTOMATICALLY INSERTS NAME AND LOADS PROFILE ON THE LEFT
+    # CLICKING ON TABLE AUTOMATICALLY INSERTS NAME AND LOADS PROFILE ON THE LEFT (OR TOGGLES MULTI-SELECT)
     db_table.select(
         fn=on_table_select,
-        inputs=[db_table],
+        inputs=[db_table, multi_select_mode_cb, batch_selected_dropdown],
         outputs=[
             manage_person_dropdown, person_gallery, person_info_md, sample_delete_dropdown,
             single_name_input, single_notes_input, btn_save_single, single_save_status,
             existing_person_picker,
             selected_person_avatar,
-            edit_person_name, edit_person_notes, edit_person_status
+            edit_person_name, edit_person_notes, edit_person_status,
+            batch_selected_dropdown, btn_open_batch_delete_modal, batch_action_status
         ],
         show_progress="hidden"
     )
@@ -4387,6 +4591,62 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             wipe_modal,
             wipe_modal_error,
             wipe_db_status,
+            db_table,
+            db_stats_md,
+            manage_person_dropdown,
+            existing_person_picker,
+            person_gallery,
+            person_info_md,
+            edit_person_name,
+            edit_person_notes,
+            selected_person_avatar,
+            system_info_md
+        ]
+    )
+
+    # Grupno označavanje i brisanje osoba (Batch Delete)
+    multi_select_mode_cb.change(
+        fn=lambda active: gr.update(visible=active),
+        inputs=[multi_select_mode_cb],
+        outputs=[batch_delete_tray]
+    )
+
+    batch_selected_dropdown.change(
+        fn=on_batch_selection_change,
+        inputs=[batch_selected_dropdown],
+        outputs=[btn_open_batch_delete_modal]
+    )
+
+    btn_select_all_filtered.click(
+        fn=handle_select_all_filtered,
+        inputs=[table_search_input, batch_selected_dropdown],
+        outputs=[batch_selected_dropdown, btn_open_batch_delete_modal, batch_action_status]
+    )
+
+    btn_clear_batch_selection.click(
+        fn=handle_clear_batch_selection,
+        outputs=[batch_selected_dropdown, btn_open_batch_delete_modal, batch_action_status]
+    )
+
+    btn_open_batch_delete_modal.click(
+        fn=handle_open_batch_delete_modal,
+        inputs=[batch_selected_dropdown],
+        outputs=[batch_delete_modal, batch_delete_modal_summary, batch_action_status, btn_confirm_batch_delete]
+    )
+
+    btn_cancel_batch_delete.click(
+        fn=handle_close_batch_delete_modal,
+        outputs=[batch_delete_modal]
+    )
+
+    btn_confirm_batch_delete.click(
+        fn=handle_execute_batch_delete,
+        inputs=[batch_selected_dropdown],
+        outputs=[
+            batch_delete_modal,
+            batch_action_status,
+            batch_selected_dropdown,
+            btn_open_batch_delete_modal,
             db_table,
             db_stats_md,
             manage_person_dropdown,
