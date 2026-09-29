@@ -1042,9 +1042,26 @@ def handle_export_backup():
     try:
         zip_path = backup.export_database_zip(DATA_DIR)
         filename = os.path.basename(zip_path)
-        return zip_path, f"✅ **Sigurnosna kopija uspješno generirana:** `{filename}`"
+        size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+        size_str = f"{size_mb / 1024:.2f} GB" if size_mb >= 1024 else f"{size_mb:.1f} MB"
+        abs_path = os.path.abspath(zip_path)
+        msg = (
+            f"✅ **Sigurnosna kopija uspješno generirana!**\n\n"
+            f"* **Datoteka:** `{filename}` ({size_str})\n"
+            f"* **Lokalna putanja na disku:** `{abs_path}`\n\n"
+            f"💡 *Savjet:* Datoteka je već sigurno spremljena na Vašem računalu! Kliknite na gumb **'📂 Otvori mapu sa sigurnosnim kopijama'** ispod kako biste je odmah otvorili u Windows Exploreru i premjestili ili kopirali."
+        )
+        return zip_path, msg
     except Exception as e:
         return None, f"❌ **Greška pri izvozu:** {e}"
+
+def handle_open_backup_folder():
+    backup_dir = os.path.abspath(os.path.join(DATA_DIR, "backups"))
+    os.makedirs(backup_dir, exist_ok=True)
+    if os.name == "nt":
+        os.startfile(backup_dir)
+        return f"📂 **Otvorena mapa sigurnosnih kopija u Windows Exploreru:** `{backup_dir}`"
+    return f"📁 **Lokacija mapa sigurnosnih kopija:** `{backup_dir}`"
 
 def handle_import_backup(file_obj):
     if not file_obj:
@@ -3750,6 +3767,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         gr.Markdown("#### 💾 Izvoz sigurnosne kopije (Export)")
                         btn_export_backup = gr.Button("📦 Kreiraj i preuzmi sigurnosnu kopiju (ZIP)", variant="primary")
                         backup_download_file = gr.File(label="Preuzmite ZIP arhivu", interactive=False)
+                        btn_open_backup_folder = gr.Button("📂 Otvori mapu sa sigurnosnim kopijama (Windows Explorer)", variant="secondary")
                         backup_export_status = gr.Markdown("")
                         
                     with gr.Group():
@@ -4305,6 +4323,11 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         outputs=[backup_download_file, backup_export_status]
     )
 
+    btn_open_backup_folder.click(
+        fn=handle_open_backup_folder,
+        outputs=[backup_export_status]
+    )
+
     btn_import_backup.click(
         fn=handle_import_backup,
         inputs=[backup_upload_file],
@@ -4430,6 +4453,12 @@ def launch_app(desktop: bool = True, port: int = 7860):
         except ImportError:
             has_webview = False
 
+    allowed_list = [
+        os.path.abspath(DATA_DIR),
+        os.path.abspath(os.path.join(DATA_DIR, "backups")),
+        os.path.abspath(APP_DIR)
+    ]
+
     if has_webview:
         print("===================================================")
         print("      ArgusFace Studio - Samostalni Radni Prozor    ")
@@ -4444,7 +4473,8 @@ def launch_app(desktop: bool = True, port: int = 7860):
             theme=custom_theme,
             css=CUSTOM_CSS,
             head=HEAD_DARK_JS,
-            show_error=True
+            show_error=True,
+            allowed_paths=allowed_list
         )
 
         url = getattr(demo, "local_url", None) or f"http://127.0.0.1:{port}"
@@ -4502,7 +4532,8 @@ def launch_app(desktop: bool = True, port: int = 7860):
             inbrowser=True,
             theme=custom_theme,
             css=CUSTOM_CSS,
-            head=HEAD_DARK_JS
+            head=HEAD_DARK_JS,
+            allowed_paths=allowed_list
         )
 
 if __name__ == "__main__":
