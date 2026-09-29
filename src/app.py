@@ -1075,6 +1075,75 @@ def handle_import_backup(file_obj):
 def handle_refresh_sysinfo():
     return hardware.get_hardware_acceleration_badge_html(), hardware.get_system_report_markdown(DATA_DIR)
 
+# ---------------- DANGER ZONE HANDLERS ----------------
+def handle_open_wipe_modal():
+    stats = db.get_stats()
+    num_p = stats.get("total_persons", 0)
+    num_s = stats.get("total_samples", 0)
+    stats_md = (
+        f"📊 **Trenutno evidentirano u bazi:** **{num_p}** registriranih osoba i **{num_s}** biometrijskih uzoraka lica.\n\n"
+        f"⚠️ Potvrdom ove radnje **svi navedeni profili i biometrijski vektori bit će trajno uklonjeni**."
+    )
+    return gr.update(visible=True), stats_md, False, ""
+
+def handle_close_wipe_modal():
+    return gr.update(visible=False), False, ""
+
+def handle_execute_wipe(confirmed: bool):
+    if not confirmed:
+        return (
+            gr.update(visible=True),
+            "⚠️ **Morate označiti potvrdni okvir** kako biste omogućili brisanje cjelokupne baze!",
+            "",
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update()
+        )
+    
+    try:
+        backup_zip = backup.export_database_zip(DATA_DIR)
+        bak_name = os.path.basename(backup_zip)
+    except Exception as e:
+        bak_name = f"Neuspjeh backupa ({e})"
+        
+    deleted_p, deleted_s = db.clear_all_persons(delete_crops=True)
+    face_engine.get_face_index(force_refresh=True)
+    
+    choices = get_person_dropdown_choices()
+    table_view, stats_view = refresh_database_view()
+    sys_report = hardware.get_system_report_markdown(DATA_DIR)
+    empty_avatar = render_person_avatar_html(None)
+    
+    success_msg = (
+        f"✅ **Cjelokupna baza osoba je uspješno obrisana i resetirana!**\n\n"
+        f"* Obrisano profila osoba: **{deleted_p}**\n"
+        f"* Obrisano biometrijskih uzoraka i izreza lica: **{deleted_s}**\n"
+        f"* 🛡️ Sigurnosna kopija prije brisanja automatski je spremljena: `{bak_name}` u mapi `data/backups/`."
+    )
+    
+    return (
+        gr.update(visible=False),
+        "",
+        success_msg,
+        table_view,
+        stats_view,
+        gr.update(choices=choices, value=None),
+        gr.update(choices=choices, value=None),
+        [],
+        "",
+        "",
+        "",
+        empty_avatar,
+        sys_report
+    )
+
 def _parse_retention_days(label_str: str) -> int:
     if not label_str or "Trajno" in label_str:
         return 0
@@ -2937,6 +3006,65 @@ input[type="range"] {
     border-color: rgba(16, 185, 129, 0.6) !important;
     color: #34d399 !important;
 }
+
+/* --- DANGER ZONE & CONFIRMATION MODAL --- */
+.danger-zone-accordion {
+    border: 1px solid rgba(239, 68, 68, 0.4) !important;
+    background: rgba(13, 20, 36, 0.6) !important;
+    border-radius: 12px !important;
+    margin-top: 24px !important;
+    overflow: hidden !important;
+}
+
+.danger-zone-card {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(13, 20, 36, 0.95) 100%) !important;
+    border: 1px solid rgba(239, 68, 68, 0.3) !important;
+    border-radius: 10px !important;
+    padding: 16px 20px !important;
+}
+
+.btn-cyber-danger {
+    background: linear-gradient(135deg, #991b1b 0%, #ef4444 100%) !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    border: 1px solid #f87171 !important;
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.35) !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+}
+
+.btn-cyber-danger:hover {
+    background: linear-gradient(135deg, #dc2626 0%, #ff4d4d 100%) !important;
+    box-shadow: 0 0 28px rgba(239, 68, 68, 0.7) !important;
+    transform: translateY(-1px) !important;
+}
+
+.cyber-modal-overlay {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    background: rgba(4, 7, 15, 0.85) !important;
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    z-index: 999999 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 20px !important;
+}
+
+.cyber-modal-box {
+    background: #0d1424 !important;
+    border: 2px solid #ef4444 !important;
+    border-radius: 16px !important;
+    box-shadow: 0 0 50px rgba(239, 68, 68, 0.5), inset 0 0 20px rgba(239, 68, 68, 0.1) !important;
+    max-width: 640px !important;
+    width: 95% !important;
+    margin: auto !important;
+    padding: 26px !important;
+}
 """
 
 HEAD_DARK_JS = """
@@ -3461,6 +3589,54 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             )
                             btn_delete_sample = gr.Button("🗑️ Obriši odabranu sliku", variant="stop", scale=1)
                         sample_action_status = gr.Markdown("")
+
+            # ---------------- DANGER ZONE (OPASNA ZONA) NA DNU BAZE OSOBA ----------------
+            with gr.Accordion("🚨 Opasna zona: Upravljanje cjelokupnim brisanjem baze (Danger Zone)", open=False, elem_classes=["danger-zone-accordion"]):
+                with gr.Group(elem_classes=["danger-zone-card"]):
+                    with gr.Row(equal_height=True):
+                        with gr.Column(scale=4):
+                            gr.Markdown(
+                                """
+                                #### ⚠️ Trajno brisanje cjelokupne baze osoba
+                                * **Upozorenje:** Ova radnja nepovratno uklanja **sve registrirane profile**, sve biometrijske vektore (512-D) i sve fotografije izreza lica.
+                                * **Sigurnost:** Klikom na gumb otvorit će se skočni prozor s detaljnim upozorenjem i obaveznom potvrdom prije izvršavanja.
+                                """
+                            )
+                        with gr.Column(scale=2):
+                            btn_open_wipe_modal = gr.Button(
+                                "🚨 Obriši cjelokupnu bazu osoba",
+                                variant="stop",
+                                elem_classes=["btn-cyber-danger"]
+                            )
+                    wipe_db_status = gr.Markdown("")
+
+            # ---------------- SKOČNI PROZOR (MODAL) ZA POTVRDU BRISANJA ----------------
+            with gr.Group(visible=False, elem_classes=["cyber-modal-overlay"]) as wipe_modal:
+                with gr.Group(elem_classes=["cyber-modal-box"]):
+                    gr.Markdown(
+                        """
+                        ## 🚨 UPOZORENJE: BRISANJE CJELOKUPNE BAZE OSOBA
+                        ---
+                        **Jeste li potpuno sigurni da želite trajno obrisati sve osobe iz baze podataka?**
+                        
+                        * ⚠️ **Ova radnja je nepovratna!**
+                        * 👤 Svi registrirani profili osoba bit će uklonjeni iz baze.
+                        * 🧬 Svi 512-dimenzionalni biometrijski vektori bit će trajno obrisani.
+                        * 🖼️ Sve povezane fotografije izreza lica (crops) bit će uklonjene s diska.
+                        * 🔄 FAISS vektorski indeks bit će u potpunosti resetiran.
+                        * 🛡️ **Automatski backup:** Sustav će neposredno prije brisanja automatski kreirati ZIP arhivu u mapi `data/backups/`.
+                        """
+                    )
+                    wipe_modal_stats = gr.Markdown("")
+                    wipe_confirm_cb = gr.Checkbox(
+                        label="Razumijem posljedice i izričito potvrđujem trajno brisanje cjelokupne baze podataka",
+                        value=False,
+                        interactive=True
+                    )
+                    wipe_modal_error = gr.Markdown("")
+                    with gr.Row():
+                        btn_cancel_wipe = gr.Button("✖️ Odustani (Zatvori prozor)", variant="secondary", scale=1)
+                        btn_confirm_wipe = gr.Button("🔥 Potvrdi i trajno obriši", variant="stop", elem_classes=["btn-cyber-danger"], scale=1)
 
         # ------------------ TAB 3: SPREMLJENI KADROVI & VIDEO SNIMKE ------------------
         with gr.TabItem("📁 Spremljeni Kadrovi i Video Snimke") as tab_saved_media:
@@ -4191,6 +4367,37 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     ).then(
         fn=refresh_database_view,
         outputs=[db_table, db_stats_md]
+    )
+
+    # Danger Zone - Cjelokupno brisanje baze (Modal)
+    btn_open_wipe_modal.click(
+        fn=handle_open_wipe_modal,
+        outputs=[wipe_modal, wipe_modal_stats, wipe_confirm_cb, wipe_modal_error]
+    )
+
+    btn_cancel_wipe.click(
+        fn=handle_close_wipe_modal,
+        outputs=[wipe_modal, wipe_confirm_cb, wipe_modal_error]
+    )
+
+    btn_confirm_wipe.click(
+        fn=handle_execute_wipe,
+        inputs=[wipe_confirm_cb],
+        outputs=[
+            wipe_modal,
+            wipe_modal_error,
+            wipe_db_status,
+            db_table,
+            db_stats_md,
+            manage_person_dropdown,
+            existing_person_picker,
+            person_gallery,
+            person_info_md,
+            edit_person_name,
+            edit_person_notes,
+            selected_person_avatar,
+            system_info_md
+        ]
     )
 
     btn_open_snaps_quick.click(

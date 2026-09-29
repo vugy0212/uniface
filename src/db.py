@@ -214,6 +214,36 @@ def delete_person(person_id: int):
             conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
     invalidate_cache()
 
+def clear_all_persons(delete_crops: bool = True) -> tuple[int, int]:
+    """
+    Deletes all registered persons and their face samples from the database.
+    If delete_crops is True, deletes all corresponding crop image files from disk.
+    Returns (deleted_persons_count, deleted_samples_count).
+    """
+    with get_db() as conn:
+        p_count = conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0]
+        s_count = conn.execute("SELECT COUNT(*) FROM face_samples").fetchone()[0]
+        
+        if delete_crops:
+            samples = conn.execute("SELECT crop_path FROM face_samples").fetchall()
+            for s in samples:
+                crop_p = s["crop_path"]
+                if crop_p and os.path.exists(crop_p):
+                    try:
+                        os.remove(crop_p)
+                    except Exception:
+                        pass
+        with conn:
+            conn.execute("DELETE FROM face_samples;")
+            conn.execute("DELETE FROM persons;")
+            try:
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('persons', 'face_samples');")
+            except Exception:
+                pass
+            conn.execute("VACUUM;")
+    invalidate_cache()
+    return p_count, s_count
+
 def delete_sample(sample_id: int):
     with get_db() as conn:
         row = conn.execute("SELECT image_path, crop_path FROM face_samples WHERE id = ?", (sample_id,)).fetchone()
