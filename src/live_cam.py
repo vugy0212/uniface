@@ -29,6 +29,7 @@ import db
 import face_engine
 import config
 import hardware
+import notifier
 from image_utils import imwrite_unicode
 from nvr_recorder import get_nvr_manager
 
@@ -75,31 +76,29 @@ def draw_corner_box(img, pt1, pt2, color, thickness=2, corner_len=20):
     cv2.line(img, (x2, y2), (x2 - corner_len, y2), color, thickness)
     cv2.line(img, (x2, y2), (x2, y2 - corner_len), color, thickness)
 
-def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, status_msg="", camera_label="USB Web Kamera", cur_sec=0, total_sec=0, log_events=False, record_nvr=False, only_matched=False):
-    """Renders sleek top and bottom HUD panels with live telemetry and timeline."""
+def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, status_msg="", camera_label="USB Web Kamera", cur_sec=0.0, total_sec=0.0, log_events=False, record_nvr=False, only_matched=False, anti_spoof=True, hover_x=-1, hover_y=-1, is_dragging=False, drag_sec=None):
+    """Renders sleek top and bottom HUD panels with live telemetry and interactive timeline."""
     h, w = frame.shape[:2]
     
-    # Top HUD background
+    # 1. Top HUD bar
     top_bar = frame[0:55, 0:w].copy()
     overlay = np.zeros_like(top_bar)
     cv2.rectangle(overlay, (0, 0), (w, 55), (15, 23, 42), -1) # Dark slate
-    cv2.addWeighted(overlay, 0.75, top_bar, 0.25, 0, top_bar)
+    cv2.addWeighted(overlay, 0.78, top_bar, 0.22, 0, top_bar)
     frame[0:55, 0:w] = top_bar
     cv2.line(frame, (0, 55), (w, 55), (59, 130, 246), 2) # Blue accent line
     
     # Top HUD text
-    cv2.putText(frame, "UniFace Live Camera", (15, 26), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(frame, "Argusface Live Camera", (15, 26), cv2.FONT_HERSHEY_DUPLEX, 0.68, (255, 255, 255), 1, cv2.LINE_AA)
     
-    # Subtitle: camera label, timeline position and event log status
+    # Subtitle: camera label and badges
     sub_title = camera_label
-    if total_sec > 0:
-        c_min, c_s = int(cur_sec) // 60, int(cur_sec) % 60
-        t_min, t_s = int(total_sec) // 60, int(total_sec) % 60
-        sub_title = f"{camera_label} | [{c_min:02d}:{c_s:02d} / {t_min:02d}:{t_s:02d}]"
     if log_events:
-        sub_title += " | [📋 EVIDENCIJA AKTIVNA]"
+        sub_title += " | [📋 EVIDENCIJA]"
+    if anti_spoof:
+        sub_title += " | [🛡️ ANTI-SPOOF: ON]"
     else:
-        sub_title += " | [EVIDENCIJA: ISKLJUČENA (Tipka 'E')]"
+        sub_title += " | [⚠️ ANTI-SPOOF: OFF (F)]"
     cv2.putText(frame, sub_title, (15, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (148, 163, 184), 1, cv2.LINE_AA)
     
     # Stats on top right
@@ -117,35 +116,102 @@ def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, stat
     cv2.putText(frame, f"Prag: {threshold:.2f}", (stats_x + 180, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (245, 158, 11), 1, cv2.LINE_AA)
     cv2.putText(frame, f"Baza: {total_persons} osoba", (stats_x + 180, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (203, 213, 225), 1, cv2.LINE_AA)
 
-    # Timeline progress bar (if video has duration)
-    if total_sec > 0:
-        bar_y1 = h - 39
-        bar_y2 = h - 35
-        # Background bar
-        cv2.rectangle(frame, (0, bar_y1), (w, bar_y2), (30, 41, 59), -1)
-        # Progress fill
-        pct = max(0.0, min(1.0, float(cur_sec) / float(total_sec)))
-        fill_w = int(w * pct)
-        if fill_w > 0:
-            cv2.rectangle(frame, (0, bar_y1), (fill_w, bar_y2), (59, 130, 246), -1)
-
-    # Bottom status / help bar
-    bot_y = h - 35
+    # 2. Bottom HUD & Interactive Timeline
+    bot_h = 46 if total_sec > 0 else 38
+    bot_y = h - bot_h
     bot_bar = frame[bot_y:h, 0:w].copy()
     b_overlay = np.zeros_like(bot_bar)
-    cv2.rectangle(b_overlay, (0, 0), (w, 35), (15, 23, 42), -1)
-    cv2.addWeighted(b_overlay, 0.75, bot_bar, 0.25, 0, bot_bar)
+    cv2.rectangle(b_overlay, (0, 0), (w, bot_h), (15, 23, 42), -1)
+    cv2.addWeighted(b_overlay, 0.85, bot_bar, 0.15, 0, bot_bar)
     frame[bot_y:h, 0:w] = bot_bar
+    cv2.line(frame, (0, bot_y), (w, bot_y), (30, 41, 59), 1)
+
+    # If video timeline exists (YouTube or local video file)
+    if total_sec > 0:
+        bar_x1 = 12
+        bar_x2 = w - 12
+        bar_w = max(1, bar_x2 - bar_x1)
+        
+        is_hover_timeline = (bar_x1 <= hover_x <= bar_x2 and (bot_y - 12) <= hover_y <= h)
+        
+        # Track height & Y
+        track_h = 8 if (is_hover_timeline or is_dragging) else 6
+        track_y1 = bot_y + (5 if not (is_hover_timeline or is_dragging) else 4)
+        track_y2 = track_y1 + track_h
+        
+        # Background bar
+        cv2.rectangle(frame, (bar_x1, track_y1), (bar_x2, track_y2), (30, 41, 59), -1)
+        cv2.rectangle(frame, (bar_x1, track_y1), (bar_x2, track_y2), (51, 65, 85), 1)
+        
+        # Hover ghost bar (semi-transparent guide up to hover cursor)
+        if is_hover_timeline and hover_x > bar_x1:
+            ghost_w = min(bar_x2, hover_x)
+            cv2.rectangle(frame, (bar_x1, track_y1), (ghost_w, track_y2), (71, 85, 105), -1)
+            
+        # Progress fill
+        active_sec = drag_sec if (is_dragging and drag_sec is not None) else cur_sec
+        pct = max(0.0, min(1.0, float(active_sec) / float(total_sec)))
+        fill_w = int(bar_w * pct)
+        if fill_w > 0:
+            cv2.rectangle(frame, (bar_x1, track_y1), (bar_x1 + fill_w, track_y2), (246, 130, 59), -1)
+            
+        # Scrubber Thumb (glowing circular handle)
+        thumb_cx = bar_x1 + fill_w
+        thumb_cy = (track_y1 + track_y2) // 2
+        outer_r = 8 if (is_hover_timeline or is_dragging) else 6
+        cv2.circle(frame, (thumb_cx, thumb_cy), outer_r, (246, 130, 59), -1, cv2.LINE_AA)
+        cv2.circle(frame, (thumb_cx, thumb_cy), 3, (255, 255, 255), -1, cv2.LINE_AA)
+        
+        # Tooltip badge on hover or dragging
+        if is_hover_timeline or is_dragging:
+            h_pct = max(0.0, min(1.0, float(hover_x - bar_x1) / float(bar_w)))
+            target_tip_sec = drag_sec if (is_dragging and drag_sec is not None) else (h_pct * float(total_sec))
+            tm, ts = int(target_tip_sec) // 60, int(target_tip_sec) % 60
+            tip_str = f"Skok: {tm:02d}:{ts:02d}" if is_dragging else f"{tm:02d}:{ts:02d}"
+            
+            (tw, th), _ = cv2.getTextSize(tip_str, cv2.FONT_HERSHEY_DUPLEX, 0.44, 1)
+            bx1 = max(10, min(w - tw - 20, hover_x - (tw + 16) // 2))
+            by1 = bot_y - 28
+            bx2 = bx1 + tw + 16
+            by2 = by1 + th + 10
+            
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (15, 23, 42), -1)
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (246, 130, 59), 1)
+            cv2.putText(frame, tip_str, (bx1 + 8, by2 - 5), cv2.FONT_HERSHEY_DUPLEX, 0.44, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (hover_x, track_y1 - 2), (hover_x, track_y2 + 2), (255, 255, 255), 1)
+
+    # Bottom status / keyboard row
+    row_y = h - 11
     
+    # Right-hand video time string
+    time_w = 0
+    if total_sec > 0:
+        c_min, c_s = int(cur_sec) // 60, int(cur_sec) % 60
+        t_min, t_s = int(total_sec) // 60, int(total_sec) % 60
+        time_str = f"{c_min:02d}:{c_s:02d} / {t_min:02d}:{t_s:02d}"
+        (time_w, _), _ = cv2.getTextSize(time_str, cv2.FONT_HERSHEY_DUPLEX, 0.44, 1)
+        cv2.putText(frame, time_str, (w - time_w - 15, row_y), cv2.FONT_HERSHEY_DUPLEX, 0.44, (226, 232, 240), 1, cv2.LINE_AA)
+
+    # Left-hand status notification or controls shortcuts
     if status_msg:
-        cv2.putText(frame, status_msg, (15, h - 12), cv2.FONT_HERSHEY_DUPLEX, 0.55, (34, 197, 94), 1, cv2.LINE_AA)
+        cv2.putText(frame, status_msg, (15, row_y), cv2.FONT_HERSHEY_DUPLEX, 0.50, (34, 197, 94), 1, cv2.LINE_AA)
     else:
-        filter_str = "Samo Zelena" if only_matched else "Sva Lica"
         if total_sec > 0:
-            controls_txt = f"[Q] Izlaz   [SPACE] Pauza   [M] {filter_str}   [R] NVR   [A/D] Premotaj   [E] Dnevnik   [S] Kadar"
+            controls_txt = "[SPACE] Pauza  [<-/->] +-5s  [A/D] +-10s  [,/.] Kadar  [0-9] %  [F] AntiSpoof  [S] Kadar  [Q] Izlaz"
+            (ctw, _), _ = cv2.getTextSize(controls_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+            if ctw > (w - time_w - 40):
+                controls_txt = "[SPACE] Pauza  [<-/->] +-5s  [,/.] Kadar  [0-9] %  [Q] Izlaz"
         else:
-            controls_txt = f"[Q/ESC] Izlaz   [M] Prikaz: {filter_str}   [R] NVR   [E] Evidencija   [S] Kadar   [SPACE] Pauza"
-        cv2.putText(frame, controls_txt, (15, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (148, 163, 184), 1, cv2.LINE_AA)
+            filter_str = "Samo Zelena" if only_matched else "Sva Lica"
+            spoof_str = "AntiSpoof:ON" if anti_spoof else "AntiSpoof:OFF"
+            controls_txt = f"[SPACE] Pauza  [F] {spoof_str}  [M] {filter_str}  [R] NVR  [E] Evidencija  [S] Kadar  [Q] Izlaz"
+            
+        cv2.putText(frame, controls_txt, (15, row_y), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (148, 163, 184), 1, cv2.LINE_AA)
+_STREAM_DURATIONS = {}
+
+def get_stream_duration(source_input):
+    """Vraća trajanje videa u sekundama ako je poznato iz metapodataka."""
+    return _STREAM_DURATIONS.get(str(source_input).strip(), 0.0)
 
 def resolve_stream_source(source_input):
     """
@@ -189,6 +255,9 @@ def resolve_stream_source(source_input):
                         if info:
                             stream_url = info.get('url')
                             title = info.get('title', 'YouTube Video')
+                            dur = info.get('duration', 0.0)
+                            if dur:
+                                _STREAM_DURATIONS[source_str] = float(dur)
                             if stream_url:
                                 log_debug(f"yt-dlp uspjeh s formatom '{fmt}': naslov='{title}', stream_url={stream_url[:60]}...")
                                 break
@@ -228,17 +297,25 @@ def resolve_stream_source(source_input):
         cam_idx = 0
     return cam_idx, f"USB Web Kamera (indeks {cam_idx})", "usb"
 
-def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="AUTO", start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_duration_sec=300, max_storage_gb=20.0, only_matched=False):
+def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device="AUTO", start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_duration_sec=300, max_storage_gb=20.0, only_matched=False, anti_spoof=None):
     """
     Main loop for live face recognition from webcam, IP/RTSP camera, YouTube, or video file.
+    Includes active Anti-Spoofing / Presentation Attack Detection (MiniFASNet V2).
     """
+    if anti_spoof is None:
+        anti_spoof = config.get_anti_spoofing()
+
     source_str = str(camera_source).strip()
-    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}, record_nvr={record_nvr}, only_matched={only_matched}, device={device}")
+    log_debug(f"run_live_camera pokrenut: camera_source={source_str}, threshold={threshold}, interval={process_interval}, start_sec={start_sec}, log_events={log_events}, cooldown={cooldown_sec}, record_nvr={record_nvr}, only_matched={only_matched}, anti_spoof={anti_spoof}, device={device}")
     
     accel_type, accel_status = hardware.get_onnx_acceleration_status()
     print("===================================================")
-    print("      UniFace Live Camera - Prepoznavanje Lica")
+    print("      Argusface Live Camera - Prepoznavanje Lica")
     print(f"      [{accel_status} ({accel_type})]")
+    if anti_spoof:
+        print("      [🛡️ Anti-Spoofing: AKTIVAN (Blokira fotografije i ekrane)]")
+    else:
+        print("      [⚠️ Anti-Spoofing: ISKLJUČEN (Dozvoljena identifikacija sa slika)]")
     if log_events:
         print(f"      [📋 Evidencija prolazaka: AKTIVNA | Cooldown: {cooldown_sec}s]")
     if record_nvr:
@@ -298,31 +375,70 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
         for _ in range(5):
             cap.read()
         
-    window_name = "UniFace Live Camera"
+    window_name = "Argusface Live Camera"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1280, 720)
 
-    # For YouTube and video files: setup timeline duration and interactive slider
+    # For YouTube and video files: setup timeline duration and interactive on-screen controls
+    meta_dur = get_stream_duration(source_str) or get_stream_duration(camera_source)
     total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) if source_kind in ("youtube", "file") else 0
     effective_fps = native_fps if (native_fps and native_fps > 0) else 25.0
-    total_seconds = int(total_frames / effective_fps) if (total_frames > 0 and effective_fps > 0) else 0
+    if meta_dur and meta_dur > 0:
+        total_seconds = int(meta_dur)
+    elif total_frames > 0 and effective_fps > 0:
+        total_seconds = int(total_frames / effective_fps)
+    else:
+        total_seconds = 0
     
     seek_target_sec = None
-    is_programmatic_trackbar_update = False
-    
-    def on_trackbar_change(pos):
-        nonlocal seek_target_sec, is_programmatic_trackbar_update
-        if not is_programmatic_trackbar_update:
-            seek_target_sec = pos
+    timeline_hover_x = -1
+    timeline_hover_y = -1
+    is_mouse_dragging = False
+    mouse_drag_sec = None
+    cur_frame_w = 1280
+    cur_frame_h = 720
 
-    has_trackbar = False
-    trackbar_name = "Pozicija (s)"
-    if total_seconds > 5:
-        try:
-            cv2.createTrackbar(trackbar_name, window_name, 0, total_seconds, on_trackbar_change)
-            has_trackbar = True
-        except Exception:
-            pass
+    def on_mouse_event(event, x, y, flags, param):
+        nonlocal timeline_hover_x, timeline_hover_y, is_mouse_dragging, mouse_drag_sec
+        nonlocal seek_target_sec, paused, paused_frame, status_notification, status_notification_time
+        
+        timeline_hover_x = x
+        timeline_hover_y = y
+        
+        if total_seconds <= 0:
+            return
+            
+        bar_x1 = 12
+        bar_x2 = cur_frame_w - 12
+        bar_w = max(1, bar_x2 - bar_x1)
+        bar_y_min = cur_frame_h - 52
+        
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if bar_y_min <= y <= cur_frame_h:
+                is_mouse_dragging = True
+                norm_pct = max(0.0, min(1.0, float(x - bar_x1) / float(bar_w)))
+                mouse_drag_sec = norm_pct * float(total_seconds)
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if is_mouse_dragging:
+                norm_pct = max(0.0, min(1.0, float(x - bar_x1) / float(bar_w)))
+                mouse_drag_sec = norm_pct * float(total_seconds)
+        elif event == cv2.EVENT_LBUTTONUP:
+            if is_mouse_dragging:
+                is_mouse_dragging = False
+                norm_pct = max(0.0, min(1.0, float(x - bar_x1) / float(bar_w)))
+                seek_target_sec = norm_pct * float(total_seconds)
+                mouse_drag_sec = None
+        elif event == cv2.EVENT_LBUTTONDBLCLK:
+            if y < bar_y_min and y > 60:
+                paused = not paused
+                if paused:
+                    paused_frame = frame.copy() if 'frame' in locals() and frame is not None else None
+                    status_notification = "⏸️ Slika zamrznuta (Pauza). Pritisnite SPACE za nastavak."
+                else:
+                    status_notification = "▶️ Nastavak reprodukcije."
+                status_notification_time = time.time()
+
+    cv2.setMouseCallback(window_name, on_mouse_event)
 
     # Start position offset if requested
     if start_sec > 0 and source_kind in ("youtube", "file"):
@@ -338,6 +454,9 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
     
     print("[INFO] Zagrijavam AI modele za prepoznavanje...")
     face_engine.get_analyzer(device=device, with_attributes=False)
+    if anti_spoof:
+        print("[INFO] Ucitavam MiniFASNet anti-spoofing model (detekcija zivosti)...")
+        face_engine.get_spoofer(device=device)
     print("[OK] AI modeli spremni za rad!")
     print(f"Pokrecem video prikaz ({source_label}). Za izlaz pritisnite tipku 'Q' ili 'ESC' u prozoru...")
 
@@ -416,57 +535,94 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
             except Exception as log_err:
                 print(f"[UPOZORENJE] Greška evidentiranja u dnevnik: {log_err}")
 
+    def process_faces_for_frame(frame_to_process):
+        try:
+            detected = face_engine.extract_faces_from_image(frame_to_process, device=device, with_attributes=False)
+            new_tracked = []
+            for f in detected:
+                bbox = f["bbox"]
+                emb = f.get("embedding")
+                if emb is None:
+                    continue
+
+                match = face_idx.match(emb, threshold=threshold)
+                sim = float(match.get("similarity", 0.0))
+                sim_pct = sim * 100
+                p_name = match.get("person_name") or match.get("best_name", "Nepoznato")
+
+                is_real = True
+                if anti_spoof:
+                    is_real, _ = face_engine.check_liveness(frame_to_process, bbox, device=device)
+
+                if anti_spoof and not is_real:
+                    color = (0, 0, 255)
+                    if match.get("matched", False):
+                        label = f"⚠ LAZIRANO: {p_name} ({sim_pct:.0f}%)"
+                    else:
+                        label = "⚠ LAZIRANO: Ekran/Slika"
+                    status_type = "spoof"
+                    notifier.trigger_alert_async("spoof", p_name if match.get("matched", False) else "Nepoznato", sim, source_label, frame_to_process, f.get("crop_bgr"))
+                elif match.get("matched", False):
+                    p_role = db.get_person_role(p_name)
+                    if p_role == "blacklist":
+                        color = (0, 0, 255)
+                        label = f"🚨 CRNA LISTA: {p_name} ({sim_pct:.1f}%)"
+                        status_type = "match"
+                        notifier.trigger_alert_async("blacklist", p_name, sim, source_label, frame_to_process, f.get("crop_bgr"))
+                    elif p_role == "vip":
+                        color = (245, 185, 11)
+                        label = f"⭐ VIP: {p_name} ({sim_pct:.1f}%)"
+                        status_type = "match"
+                        notifier.trigger_alert_async("vip", p_name, sim, source_label, frame_to_process, f.get("crop_bgr"))
+                    else:
+                        color = (16, 185, 129)
+                        label = f"{p_name} ({sim_pct:.1f}%)"
+                        status_type = "match"
+                elif sim >= max(0.30, threshold - possible_threshold_delta):
+                    color = (11, 158, 245)
+                    label = f"Moguce: {p_name} ({sim_pct:.1f}%)"
+                    status_type = "possible"
+                else:
+                    color = (68, 68, 239)
+                    label = f"Nepoznato ({sim_pct:.1f}%)" if sim > 0.15 else "Nepoznata osoba"
+                    status_type = "unknown"
+
+                new_tracked.append({
+                    "bbox": bbox,
+                    "label": label,
+                    "color": color,
+                    "status": status_type,
+                    "crop": f.get("crop_bgr", None),
+                    "emb": emb,
+                    "raw_name": p_name,
+                    "similarity": sim
+                })
+            return new_tracked
+        except Exception as frame_err:
+            log_debug(f"Greška analize lica: {frame_err}")
+            return []
+
     try:
         while True:
-            # Handle seek request from trackbar or keyboard shortcuts
+            # Handle seek request from interactive timeline or keyboard shortcuts
             if seek_target_sec is not None and source_kind in ("youtube", "file"):
-                target_sec = max(0, min(total_seconds, int(seek_target_sec))) if total_seconds > 0 else max(0, int(seek_target_sec))
+                target_sec = max(0.0, min(float(total_seconds), float(seek_target_sec))) if total_seconds > 0 else max(0.0, float(seek_target_sec))
                 seek_target_sec = None
-                cap.set(cv2.CAP_PROP_POS_MSEC, target_sec * 1000.0)
-                status_notification = f"⏩ Premotano na: {target_sec // 60:02d}:{target_sec % 60:02d}"
+                
+                if source_kind == "file" and effective_fps > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(target_sec * effective_fps))
+                else:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, target_sec * 1000.0)
+                    
+                sm, ss = int(target_sec) // 60, int(target_sec) % 60
+                status_notification = f"⏩ Premotano na: {sm:02d}:{ss:02d}"
                 status_notification_time = time.time()
                 ret_s, frame_s = cap.read()
                 if ret_s:
                     frame = frame_s
                     if paused:
                         paused_frame = frame_s.copy()
-                    # Trigger instant face recognition on seeked frame
-                    try:
-                        detected = face_engine.extract_faces_from_image(frame, device=device, with_attributes=False)
-                        new_tracked = []
-                        for f in detected:
-                            bbox = f["bbox"]
-                            emb = f.get("embedding")
-                            if emb is None:
-                                continue
-                            match = face_idx.match(emb, threshold=threshold)
-                            sim = float(match.get("similarity", 0.0))
-                            sim_pct = sim * 100
-                            p_name = match.get("person_name") or match.get("best_name", "Nepoznato")
-                            if match.get("matched", False):
-                                color = (16, 185, 129)
-                                label = f"{p_name} ({sim_pct:.1f}%)"
-                                status_type = "match"
-                                record_event_if_eligible(p_name, sim, f.get("crop_bgr", None))
-                            elif sim >= max(0.30, threshold - possible_threshold_delta):
-                                color = (11, 158, 245)
-                                label = f"Moguce: {p_name} ({sim_pct:.1f}%)"
-                                status_type = "possible"
-                            else:
-                                color = (68, 68, 239)
-                                label = f"Nepoznato ({sim_pct:.1f}%)" if sim > 0.15 else "Nepoznata osoba"
-                                status_type = "unknown"
-                            new_tracked.append({
-                                "bbox": bbox,
-                                "label": label,
-                                "color": color,
-                                "status": status_type,
-                                "crop": f.get("crop_bgr", None),
-                                "emb": emb
-                            })
-                        current_faces_tracked = new_tracked
-                    except Exception as err:
-                        log_debug(f"Greska brzog prepoznavanja pri premotavanju: {err}")
+                    current_faces_tracked = process_faces_for_frame(frame)
 
             if not paused:
                 ret, frame = cap.read()
@@ -487,19 +643,17 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                         continue
                 frame_count += 1
             else:
-                frame = paused_frame.copy()
-                
+                frame = paused_frame.copy() if paused_frame is not None else frame
+
+            # Update current resolution for mouse mapping
+            cur_frame_h, cur_frame_w = frame.shape[:2]
+
             cur_msec = cap.get(cv2.CAP_PROP_POS_MSEC) if source_kind in ("youtube", "file") else 0.0
             cur_sec = max(0.0, cur_msec / 1000.0)
-
-            # Periodically update trackbar position to reflect current playback time
-            if has_trackbar and (frame_count % 15 == 0) and not paused:
-                is_programmatic_trackbar_update = True
-                try:
-                    cv2.setTrackbarPos(trackbar_name, window_name, int(cur_sec))
-                except Exception:
-                    pass
-                is_programmatic_trackbar_update = False
+            if cur_sec <= 0.0 and source_kind in ("youtube", "file"):
+                cur_f = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                if cur_f > 0 and effective_fps > 0:
+                    cur_sec = cur_f / effective_fps
 
             now = time.perf_counter()
             elapsed = now - t_start
@@ -512,53 +666,7 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
 
             # Face recognition on process_interval frames (smooth performance)
             if not paused and (frame_count % process_interval == 0):
-                try:
-                    # Analyze frame with RetinaFace + EdgeFace BASE (commercial BSD-3-Clause)
-                    detected = face_engine.extract_faces_from_image(frame, device=device, with_attributes=False)
-                    new_tracked = []
-                    
-                    for f in detected:
-                        bbox = f["bbox"]
-                        emb = f.get("embedding")
-                        if emb is None:
-                            continue
-                        
-                        # Sub-millisecond BLAS matching against database
-                        match = face_idx.match(emb, threshold=threshold)
-                        
-                        sim = float(match.get("similarity", 0.0))
-                        sim_pct = sim * 100
-                        p_name = match.get("person_name") or match.get("best_name", "Nepoznato")
-                        
-                        if match.get("matched", False):
-                            # Verified match -> Emerald Green
-                            color = (16, 185, 129)
-                            label = f"{p_name} ({sim_pct:.1f}%)"
-                            status_type = "match"
-                        elif sim >= max(0.30, threshold - possible_threshold_delta):
-                            # Possible match -> Amber Orange
-                            color = (11, 158, 245)
-                            label = f"Moguce: {p_name} ({sim_pct:.1f}%)"
-                            status_type = "possible"
-                        else:
-                            # Unknown -> Crimson Red
-                            color = (68, 68, 239)
-                            label = f"Nepoznato ({sim_pct:.1f}%)" if sim > 0.15 else "Nepoznata osoba"
-                            status_type = "unknown"
-                            
-                        new_tracked.append({
-                            "bbox": bbox,
-                            "label": label,
-                            "color": color,
-                            "status": status_type,
-                            "crop": f.get("crop_bgr", None),
-                            "emb": emb,
-                            "raw_name": p_name,
-                            "similarity": sim
-                        })
-                    current_faces_tracked = new_tracked
-                except Exception as frame_err:
-                    print(f"[UPOZORENJE] Greška obrade lica u kadru: {frame_err}")
+                current_faces_tracked = process_faces_for_frame(frame)
 
             # Render tracked faces onto frame
             display_frame = frame.copy()
@@ -601,7 +709,7 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
             else:
                 status_notification = ""
 
-            # Draw HUD
+            # Draw HUD with interactive timeline
             draw_hud(
                 display_frame,
                 fps=fps,
@@ -615,7 +723,12 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                 total_sec=total_seconds,
                 log_events=log_events,
                 record_nvr=record_nvr,
-                only_matched=only_matched
+                only_matched=only_matched,
+                anti_spoof=anti_spoof,
+                hover_x=timeline_hover_x,
+                hover_y=timeline_hover_y,
+                is_dragging=is_mouse_dragging,
+                drag_sec=mouse_drag_sec
             )
 
             # Write frame to NVR if active
@@ -649,84 +762,166 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
                 if sleep_remainder > 0:
                     time.sleep(sleep_remainder)
 
-            # Keyboard controls (must be called immediately after imshow to pump window events)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (27, ord('q'), ord('Q')): # ESC or Q -> Exit
-                log_debug(f"Petlja prekinuta tipkom na tipkovnici: key={key}")
-                break
-            elif key in (ord(' '), ord('k'), ord('K')): # Space or K -> Pause
-                paused = not paused
-                if paused:
-                    paused_frame = frame.copy()
-                    status_notification = "⏸️ Slika zamrznuta (Pauza). Pritisnite SPACE za nastavak."
-                else:
-                    status_notification = "▶️ Nastavak snimanja uzivo."
-                status_notification_time = time.time()
-            elif key in (ord('r'), ord('R')): # R -> NVR Record toggle
-                record_nvr = not record_nvr
-                if record_nvr:
-                    nvr.configure_channel(cam_nvr_id, source_label, segment_duration_sec=segment_duration_sec, fps=20.0)
-                    status_notification = "🔴 NVR Snimanje: AKTIVNO"
-                else:
-                    nvr.stop_all()
-                    status_notification = "NVR Snimanje: ISKLJUCENO"
-                status_notification_time = time.time()
-            elif key in (ord('u'), ord('U')): # U -> Refresh DB cache
-                db.invalidate_cache()
-                face_idx = face_engine.get_face_index()
-                stats = db.get_stats()
-                total_persons = stats["total_persons"]
-                status_notification = f"Baza osvjezena! Osoba: {total_persons}"
-                status_notification_time = time.time()
-                print(f"[OK] {status_notification}")
-            elif key in (ord('e'), ord('E')): # E -> Toggle Event Logging
-                log_events = not log_events
-                if log_events:
-                    status_notification = f"📋 Evidencija prolazaka UKLJUČENA (Cooldown: {cooldown_sec}s)"
-                    print(f"[INFO] 📋 Evidencija prolazaka UKLJUČENA (Cooldown: {cooldown_sec}s)")
-                else:
-                    status_notification = "⏸️ Evidencija prolazaka ISKLJUČENA"
-                    print("[INFO] ⏸️ Evidencija prolazaka ISKLJUČENA")
-                status_notification_time = time.time()
-            elif key in (ord('m'), ord('M')): # M -> Toggle only matched (green) vs all faces
-                only_matched = not only_matched
-                status_notification = "Filter: SAMO PREPOZNATA LICA (Zelena)" if only_matched else "Filter: SVA LICA (Ukljucujuci nepoznata)"
-                status_notification_time = time.time()
-                print(f"[INFO] {status_notification}")
-            elif key in (ord('a'), ord('A'), ord('j'), ord('J')): # Seek -10s
-                if source_kind in ("youtube", "file"):
-                    seek_target_sec = max(0, cur_sec - 10)
-            elif key in (ord('d'), ord('D'), ord('l'), ord('L')): # Seek +10s
-                if source_kind in ("youtube", "file"):
-                    seek_target_sec = min(total_seconds, cur_sec + 10) if total_seconds > 0 else cur_sec + 10
-            elif key in (ord(','), ): # Seek -30s
-                if source_kind in ("youtube", "file"):
-                    seek_target_sec = max(0, cur_sec - 30)
-            elif key in (ord('.'), ): # Seek +30s
-                if source_kind in ("youtube", "file"):
-                    seek_target_sec = min(total_seconds, cur_sec + 30) if total_seconds > 0 else cur_sec + 30
-            elif key in (ord('s'), ord('S')): # S -> Snapshot
-                t_str = time.strftime("%Y%m%d_%H%M%S")
-                snap_dir = config.get_snapshot_dir()
-                snap_filename = f"live_snap_{t_str}.jpg"
-                snap_path = os.path.join(snap_dir, snap_filename)
-                target_img = display_frame.copy() if 'display_frame' in locals() and display_frame is not None else frame
-                imwrite_unicode(snap_path, target_img)
-                status_notification = f"📸 Kadar spremljen u: {snap_filename} (Tipka 'O' za mapu)"
-                status_notification_time = time.time()
-                print(f"[OK] Snimka kadra spremljena: {snap_path}")
-            elif key in (ord('o'), ord('O')): # O -> Open folder in Windows Explorer
-                config.open_folder_in_explorer()
-                status_notification = "📂 Otvorena mapa sa snimkama u Exploreru."
-                status_notification_time = time.time()
-            elif key in (ord('+'), ord('=')): # Increase threshold
-                threshold = min(0.95, round(threshold + 0.02, 2))
-                status_notification = f"Prag povecan na: {threshold:.2f} (stroze)"
-                status_notification_time = time.time()
-            elif key in (ord('-'), ord('_')): # Decrease threshold
-                threshold = max(0.20, round(threshold - 0.02, 2))
-                status_notification = f"Prag smanjen na: {threshold:.2f} (blaze)"
-                status_notification_time = time.time()
+            # Keyboard controls (cv2.waitKeyEx pumps Windows GUI events and returns extended codes)
+            key_raw = cv2.waitKeyEx(25 if paused else 1)
+            if key_raw != -1:
+                key = key_raw & 0xFF
+                
+                # ESC or Q -> Exit
+                if key in (27, ord('q'), ord('Q')):
+                    log_debug(f"Petlja prekinuta tipkom na tipkovnici: key={key_raw}")
+                    break
+                    
+                # SPACE or K -> Pause / Play
+                elif key in (ord(' '), ord('k'), ord('K')):
+                    paused = not paused
+                    if paused:
+                        paused_frame = frame.copy()
+                        status_notification = "⏸️ Slika zamrznuta (Pauza). Pritisnite SPACE za nastavak."
+                    else:
+                        status_notification = "▶️ Nastavak reprodukcije."
+                    status_notification_time = time.time()
+                    
+                # Frame-by-frame forward: [.] or [>] or Right Arrow while paused
+                elif (key in (ord('.'), ord('>')) and paused) or (key_raw in (2555904, 65363) and paused):
+                    if source_kind in ("youtube", "file"):
+                        ret_step, frame_step = cap.read()
+                        if ret_step:
+                            frame = frame_step
+                            paused_frame = frame_step.copy()
+                            frame_count += 1
+                            current_faces_tracked = process_faces_for_frame(frame)
+                            cur_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+                            cur_sec = max(0.0, cur_msec / 1000.0) if cur_msec > 0 else (frame_count / effective_fps)
+                            c_min, c_s = int(cur_sec) // 60, int(cur_sec) % 60
+                            status_notification = f"▶| Kadar +1 ({c_min:02d}:{c_s:02d})"
+                            status_notification_time = time.time()
+                            
+                # Frame-by-frame backward: [,] or [<] or Left Arrow while paused
+                elif (key in (ord(','), ord('<')) and paused) or (key_raw in (2424832, 65361) and paused):
+                    if source_kind in ("youtube", "file"):
+                        cur_f = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        target_f = max(0, cur_f - 2)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, target_f)
+                        ret_step, frame_step = cap.read()
+                        if ret_step:
+                            frame = frame_step
+                            paused_frame = frame_step.copy()
+                            current_faces_tracked = process_faces_for_frame(frame)
+                            cur_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+                            cur_sec = max(0.0, cur_msec / 1000.0) if cur_msec > 0 else (target_f / effective_fps)
+                            c_min, c_s = int(cur_sec) // 60, int(cur_sec) % 60
+                            status_notification = f"|◀ Kadar -1 ({c_min:02d}:{c_s:02d})"
+                            status_notification_time = time.time()
+                            
+                # Seek -5s: Left Arrow (while playing) or [,] (while playing)
+                elif (key_raw in (2424832, 65361) and not paused) or (key in (ord(','), ord('<')) and not paused):
+                    if source_kind in ("youtube", "file"):
+                        seek_target_sec = max(0.0, cur_sec - 5.0)
+                        
+                # Seek +5s: Right Arrow (while playing) or [.] (while playing)
+                elif (key_raw in (2555904, 65363) and not paused) or (key in (ord('.'), ord('>')) and not paused):
+                    if source_kind in ("youtube", "file"):
+                        seek_target_sec = min(float(total_seconds), cur_sec + 5.0) if total_seconds > 0 else cur_sec + 5.0
+                        
+                # Seek -10s: [A] or [J]
+                elif key in (ord('a'), ord('A'), ord('j'), ord('J')):
+                    if source_kind in ("youtube", "file"):
+                        seek_target_sec = max(0.0, cur_sec - 10.0)
+                        
+                # Seek +10s: [D] or [L]
+                elif key in (ord('d'), ord('D'), ord('l'), ord('L')):
+                    if source_kind in ("youtube", "file"):
+                        seek_target_sec = min(float(total_seconds), cur_sec + 10.0) if total_seconds > 0 else cur_sec + 10.0
+                        
+                # Jump to percentage: [0] - [9]
+                elif ord('0') <= key <= ord('9'):
+                    if source_kind in ("youtube", "file") and total_seconds > 0:
+                        pct_val = (key - ord('0')) / 10.0
+                        seek_target_sec = pct_val * float(total_seconds)
+                        status_notification = f"⏩ Skok na {int(pct_val * 100)}% videa"
+                        status_notification_time = time.time()
+                        
+                # R -> NVR Record toggle
+                elif key in (ord('r'), ord('R')):
+                    record_nvr = not record_nvr
+                    if record_nvr:
+                        nvr.configure_channel(cam_nvr_id, source_label, segment_duration_sec=segment_duration_sec, fps=20.0)
+                        status_notification = "🔴 NVR Snimanje: AKTIVNO"
+                    else:
+                        nvr.stop_all()
+                        status_notification = "NVR Snimanje: ISKLJUCENO"
+                    status_notification_time = time.time()
+                    
+                # U -> Refresh DB cache
+                elif key in (ord('u'), ord('U')):
+                    db.invalidate_cache()
+                    face_idx = face_engine.get_face_index()
+                    stats = db.get_stats()
+                    total_persons = stats["total_persons"]
+                    status_notification = f"Baza osvjezena! Osoba: {total_persons}"
+                    status_notification_time = time.time()
+                    print(f"[OK] {status_notification}")
+                    
+                # E -> Toggle Event Logging
+                elif key in (ord('e'), ord('E')):
+                    log_events = not log_events
+                    if log_events:
+                        status_notification = f"📋 Evidencija prolazaka UKLJUČENA (Cooldown: {cooldown_sec}s)"
+                        print(f"[INFO] 📋 Evidencija prolazaka UKLJUČENA (Cooldown: {cooldown_sec}s)")
+                    else:
+                        status_notification = "⏸️ Evidencija prolazaka ISKLJUČENA"
+                        print("[INFO] ⏸️ Evidencija prolazaka ISKLJUČENA")
+                    status_notification_time = time.time()
+                    
+                # M -> Toggle only matched (green) vs all faces
+                elif key in (ord('m'), ord('M')):
+                    only_matched = not only_matched
+                    status_notification = "Filter: SAMO PREPOZNATA LICA (Zelena)" if only_matched else "Filter: SVA LICA (Ukljucujuci nepoznata)"
+                    status_notification_time = time.time()
+                    print(f"[INFO] {status_notification}")
+                    
+                # F -> Toggle Anti-Spoofing / Presentation Attack Check
+                elif key in (ord('f'), ord('F')):
+                    anti_spoof = not anti_spoof
+                    config.set_anti_spoofing(anti_spoof)
+                    if anti_spoof:
+                        status_notification = "🛡️ Zastita od laziranja (Anti-Spoof): UKLJUCENA"
+                        print("[INFO] 🛡️ Zaštita od lažiranja (Anti-Spoof): UKLJUČENA (Blokira fotografije i ekrane)")
+                    else:
+                        status_notification = "⚠️ Zastita od laziranja: ISKLJUCENA (Dozvoljena identifikacija sa slika)"
+                        print("[INFO] ⚠️ Zaštita od lažiranja: ISKLJUČENA (Dozvoljena identifikacija sa slika/mobitela)")
+                    status_notification_time = time.time()
+                    
+                # S -> Snapshot
+                elif key in (ord('s'), ord('S')):
+                    t_str = time.strftime("%Y%m%d_%H%M%S")
+                    snap_dir = config.get_snapshot_dir()
+                    snap_filename = f"live_snap_{t_str}.jpg"
+                    snap_path = os.path.join(snap_dir, snap_filename)
+                    target_img = display_frame.copy() if 'display_frame' in locals() and display_frame is not None else frame
+                    imwrite_unicode(snap_path, target_img)
+                    status_notification = f"📸 Kadar spremljen u: {snap_filename} (Tipka 'O' za mapu)"
+                    status_notification_time = time.time()
+                    print(f"[OK] Snimka kadra spremljena: {snap_path}")
+                    
+                # O -> Open folder in Windows Explorer
+                elif key in (ord('o'), ord('O')):
+                    config.open_folder_in_explorer()
+                    status_notification = "📂 Otvorena mapa sa snimkama u Exploreru."
+                    status_notification_time = time.time()
+                    
+                # Up Arrow or [+] -> Increase threshold
+                elif key_raw in (2490368, 65362) or key in (ord('+'), ord('=')):
+                    threshold = min(0.95, round(threshold + 0.02, 2))
+                    status_notification = f"Prag povecan na: {threshold:.2f} (stroze)"
+                    status_notification_time = time.time()
+                    
+                # Down Arrow or [-] -> Decrease threshold
+                elif key_raw in (2621440, 65364) or key in (ord('-'), ord('_')):
+                    threshold = max(0.20, round(threshold - 0.02, 2))
+                    status_notification = f"Prag smanjen na: {threshold:.2f} (blaze)"
+                    status_notification_time = time.time()
                 
     except Exception as e:
         import traceback
@@ -747,7 +942,7 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
     return True
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="UniFace Live Face Recognition")
+    parser = argparse.ArgumentParser(description="Argusface Live Face Recognition")
     parser.add_argument("--source", type=str, default="0", help="Camera index (0, 1) or RTSP/HTTP URL")
     parser.add_argument("--camera", type=str, default=None, help="Legacy alias for camera source")
     parser.add_argument("--threshold", type=float, default=0.45, help="Recognition cosine similarity threshold (default: 0.45)")
@@ -760,6 +955,8 @@ if __name__ == "__main__":
     parser.add_argument("--segment-min", type=int, default=5, help="Duration of each MP4 video segment in minutes (default: 5)")
     parser.add_argument("--max-gb", type=float, default=20.0, help="Maximum disk storage quota in GB for FIFO cleanup (default: 20)")
     parser.add_argument("--only-matched", action="store_true", default=False, help="Display bounding boxes only for recognized faces (green)")
+    parser.add_argument("--anti-spoof", dest="anti_spoof", action="store_true", default=None, help="Enable presentation attack / photo liveness check (default: True)")
+    parser.add_argument("--no-anti-spoof", dest="anti_spoof", action="store_false", help="Disable anti-spoofing to allow identifying persons from phone photos")
     args = parser.parse_args()
     
     src = args.camera if args.camera is not None else args.source
@@ -775,5 +972,6 @@ if __name__ == "__main__":
         record_nvr=args.record_nvr,
         segment_duration_sec=args.segment_min * 60,
         max_storage_gb=args.max_gb,
-        only_matched=args.only_matched
+        only_matched=args.only_matched,
+        anti_spoof=args.anti_spoof
     )
