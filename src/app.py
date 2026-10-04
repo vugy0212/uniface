@@ -15,6 +15,7 @@ import face_engine
 import hardware
 import backup
 import config
+import notifier
 import photo_sorter
 import queue
 import threading
@@ -71,6 +72,14 @@ def get_profile_badge(count: int):
     else:
         return f"🟢 Izvrsno ({count} slika)"
 
+def format_role_badge(role_str: str) -> str:
+    r = (role_str or "standard").lower()
+    if r == "vip":
+        return "⭐ VIP"
+    elif r == "blacklist":
+        return "🚨 Crna lista"
+    return "Standard"
+
 def refresh_database_view(search_query=""):
     all_persons = db.get_all_persons()
     stats = db.get_stats()
@@ -79,7 +88,7 @@ def refresh_database_view(search_query=""):
     if query:
         filtered = [
             p for p in all_persons
-            if query in p["name"].lower() or query == str(p["id"]) or query in (p["notes"] or "").lower()
+            if query in p["name"].lower() or query == str(p["id"]) or query in (p["notes"] or "").lower() or query in (p.get("role", "") or "").lower()
         ]
         stats_text = f"🔍 Pronađeno: **{len(filtered)}** od ukupno **{stats['total_persons']}** osoba (Filter: *'{search_query}'*)"
     else:
@@ -91,6 +100,7 @@ def refresh_database_view(search_query=""):
         rows.append([
             p["id"],
             p["name"],
+            format_role_badge(p.get("role", "standard")),
             p["sample_count"],
             get_profile_badge(p["sample_count"]),
             p["notes"] or "-",
@@ -154,33 +164,65 @@ def generate_detection_cards_html(results, show_all_faces=False):
 
     cards = []
     for r in display_results:
-        success, buffer = cv2.imencode('.jpg', r["crop_bgr"])
-        if success:
-            img_b64 = base64.b64encode(buffer).decode('utf-8')
-            img_src = f"data:image/jpeg;base64,{img_b64}"
-        else:
-            img_src = ""
+        crop_bgr = r.get("crop_bgr")
+        img_src = ""
+        if crop_bgr is not None and isinstance(crop_bgr, np.ndarray) and crop_bgr.size > 0:
+            try:
+                success, buffer = cv2.imencode('.jpg', crop_bgr)
+                if success:
+                    img_b64 = base64.b64encode(buffer).decode('utf-8')
+                    img_src = f"data:image/jpeg;base64,{img_b64}"
+            except Exception:
+                img_src = ""
         
         sim_val = r.get("similarity", 0)
+        pct = 0.0
         if isinstance(sim_val, (int, float)):
-            sim_str = f"{float(sim_val)*100:.1f}% Match"
+            pct = float(sim_val) * 100
+            sim_str = f"{pct:.1f}% Match"
         else:
             sim_str = f"{sim_val} Match"
             
         status = r.get("status", "Nepoznat")
-        if status == "Prepoznat":
+        name = r.get("best_name", "Nepoznata osoba")
+        
+        # Determine person role badge
+        p_role = "standard"
+        if status in ("Prepoznat", "Moguće poklapanje") and name not in ("Nepoznata osoba", "Nepoznato"):
+            try:
+                p_role = db.get_person_role(name)
+            except Exception:
+                p_role = "standard"
+                
+        if p_role == "blacklist":
+            badge_cls = "match-blacklist is-blacklist"
+            status_text = "Crna lista"
+            role_badge = '<span class="role-pill role-blacklist">🚨 CRNA LISTA</span>'
+        elif p_role == "vip":
+            badge_cls = "match-vip is-vip"
+            status_text = "VIP"
+            role_badge = '<span class="role-pill role-vip">⭐ VIP</span>'
+        elif status == "Prepoznat":
             badge_cls = "match-success"
             status_text = "Prepoznato"
+            role_badge = '<span class="role-pill role-verified">✓ Verificirano</span>'
         elif status == "Moguće poklapanje":
             badge_cls = "match-warning"
             status_text = "Moguće"
+            role_badge = '<span class="role-pill role-possible">? Provjera</span>'
         else:
             badge_cls = "match-unknown"
             status_text = "Nepoznato"
+            role_badge = ''
             
-        name = r.get("best_name", "Nepoznata osoba")
         age = r.get("age", "-")
         gender = r.get("gender", "-")
+        meta_parts = []
+        if age and str(age) != "-":
+            meta_parts.append(f'<span class="meta-item"><i class="meta-label">Dob:</i> <b>~{age}g</b></span>')
+        if gender and str(gender) != "-":
+            meta_parts.append(f'<span class="meta-item"><i class="meta-label">Spol:</i> <b>{gender}</b></span>')
+        meta_html = ' <span class="meta-sep">•</span> '.join(meta_parts) if meta_parts else '<span class="meta-item">Biometrijski profil</span>'
         
         cards.append(f"""
         <div class="cyber-detection-card {badge_cls}">
@@ -189,14 +231,18 @@ def generate_detection_cards_html(results, show_all_faces=False):
                 <span class="card-status-dot"></span>
             </div>
             <div class="card-details">
-                <div class="card-name" title="{name}">{name}</div>
+                <div class="card-name-row">
+                    <span class="card-name" title="{name}">{name}</span>
+                    {role_badge}
+                </div>
                 <div class="card-meta">
-                    <span class="meta-item"><i class="meta-label">Dob:</i> <b>{age}</b></span>
-                    <span class="meta-sep">•</span>
-                    <span class="meta-item"><i class="meta-label">Spol:</i> <b>{gender}</b></span>
+                    {meta_html}
                 </div>
                 <div class="card-similarity-badge">
                     <span class="sim-pill">{sim_str}</span>
+                </div>
+                <div class="card-conf-track" title="Sličnost: {pct:.1f}%">
+                    <div class="card-conf-fill" style="width: {min(100.0, max(6.0, pct)):.1f}%;"></div>
                 </div>
             </div>
         </div>
@@ -227,57 +273,72 @@ def recognize_faces(image, threshold, draw_landmarks, blur_unknown, blur_all=Fal
     if image is None:
         return None, [], [], "⚠️ Molimo učitajte sliku za analizu.", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
     
-    img_bgr, err = imread_unicode(image)
-    if img_bgr is None:
-        return None, [], [], f"❌ Greška pri obradi slike: {err}", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
+    try:
+        img_bgr, err = imread_unicode(image)
+        if img_bgr is None or not isinstance(img_bgr, np.ndarray) or img_bgr.size == 0:
+            return None, [], [], f"❌ Greška pri obradi slike: {err or 'Neispravan format slike'}", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
+            
+        annotated_bgr, results = face_engine.process_and_annotate(
+            img_bgr,
+            threshold=float(threshold),
+            draw_landmarks=bool(draw_landmarks),
+            blur_unknown=bool(blur_unknown),
+            blur_all=bool(blur_all),
+            cached_faces=cached_faces
+        )
         
-    annotated_bgr, results = face_engine.process_and_annotate(
-        img_bgr,
-        threshold=float(threshold),
-        draw_landmarks=bool(draw_landmarks),
-        blur_unknown=bool(blur_unknown),
-        blur_all=bool(blur_all),
-        cached_faces=cached_faces
-    )
-    
-    annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
-    
-    table_data = []
-    crops_gallery = []
-    candidate_choices = []
-    
-    for r in results:
-        table_data.append([
-            f"Lice #{r['index']}",
-            r["badge"],
-            r["best_name"],
-            r["similarity"],
-            r["threshold"],
-            r["margin"],
-            r["profile_quality"],
-            r["age"],
-            r["gender"]
-        ])
-        crop_rgb = cv2.cvtColor(r["crop_bgr"], cv2.COLOR_BGR2RGB)
-        
-        if r["status"] == "Prepoznat":
-            caption = f"[#{r['index']}] {r['best_name']} ({r['similarity']})"
-        elif r["status"] == "Moguće poklapanje":
-            caption = f"[#{r['index']}] {r['best_name']}? ({r['similarity']} - ispod praga)"
+        if annotated_bgr is not None and isinstance(annotated_bgr, np.ndarray) and annotated_bgr.size > 0:
+            annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
         else:
-            caption = f"[#{r['index']}] Nepoznato (max {r['similarity']})"
+            annotated_rgb = None
+        
+        table_data = []
+        crops_gallery = []
+        candidate_choices = []
+        
+        for r in results:
+            table_data.append([
+                f"Lice #{r['index']}",
+                r["badge"],
+                r["best_name"],
+                r["similarity"],
+                r["threshold"],
+                r["margin"],
+                r["profile_quality"],
+                r["age"],
+                r["gender"]
+            ])
+            crop_bgr = r.get("crop_bgr")
+            if crop_bgr is not None and isinstance(crop_bgr, np.ndarray) and crop_bgr.size > 0:
+                try:
+                    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+                except Exception:
+                    crop_rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+            else:
+                crop_rgb = np.zeros((100, 100, 3), dtype=np.uint8)
             
-        crops_gallery.append((crop_rgb, caption))
-        candidate_choices.append(f"[#{r['index']}] {r['best_name']} ({r['similarity']})")
-            
-    num_recognized = sum(1 for r in results if r["status"] == "Prepoznat")
-    num_possible = sum(1 for r in results if r["status"] == "Moguće poklapanje")
-    num_unknown = sum(1 for r in results if r["status"] == "Nepoznat")
-    
-    summary = f"🔍 Pronađeno lica: **{len(results)}** | ✅ Prepoznato: **{num_recognized}** | ⚠️ Moguće (ispod praga): **{num_possible}** | ❌ Nepoznato: **{num_unknown}**"
-    dropdown_update = gr.update(choices=candidate_choices, value=candidate_choices[0] if candidate_choices else None)
-    cards_html = generate_detection_cards_html(results, show_all_faces=show_all_faces)
-    return annotated_rgb, crops_gallery, table_data, summary, dropdown_update, results, cards_html
+            if r["status"] == "Prepoznat":
+                caption = f"[#{r['index']}] {r['best_name']} ({r['similarity']})"
+            elif r["status"] == "Moguće poklapanje":
+                caption = f"[#{r['index']}] {r['best_name']}? ({r['similarity']} - ispod praga)"
+            else:
+                caption = f"[#{r['index']}] Nepoznato (max {r['similarity']})"
+                
+            crops_gallery.append((crop_rgb, caption))
+            candidate_choices.append(f"[#{r['index']}] {r['best_name']} ({r['similarity']})")
+                
+        num_recognized = sum(1 for r in results if r["status"] == "Prepoznat")
+        num_possible = sum(1 for r in results if r["status"] == "Moguće poklapanje")
+        num_unknown = sum(1 for r in results if r["status"] == "Nepoznat")
+        
+        summary = f"🔍 Pronađeno lica: **{len(results)}** | ✅ Prepoznato: **{num_recognized}** | ⚠️ Moguće (ispod praga): **{num_possible}** | ❌ Nepoznato: **{num_unknown}**"
+        dropdown_update = gr.update(choices=candidate_choices, value=candidate_choices[0] if candidate_choices else None)
+        cards_html = generate_detection_cards_html(results, show_all_faces=show_all_faces)
+        return annotated_rgb, crops_gallery, table_data, summary, dropdown_update, results, cards_html
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, [], [], f"⚠️ Greška pri analizi slike: {str(e)}", gr.update(choices=[], value=None), [], generate_detection_cards_html([], show_all_faces=show_all_faces)
 
 def on_recognition_gallery_click(evt: gr.SelectData, rec_faces):
     faces = rec_faces or []
@@ -551,7 +612,7 @@ def on_single_image_click(evt: gr.SelectData, state):
         pass
     return gr.update(), gr.update(), gr.update(), gr.update(), state
 
-def save_single_person(name, notes, face_choice_str, state):
+def save_single_person(name, notes, face_choice_str, role, state):
     state = _get_single_state(state)
     faces = state["faces"]
     bgr = state["bgr"]
@@ -564,7 +625,8 @@ def save_single_person(name, notes, face_choice_str, state):
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(), gr.update(), gr.update(),
-            state
+            state,
+            gr.update(), gr.update()
         )
     if not faces:
         return (
@@ -573,7 +635,8 @@ def save_single_person(name, notes, face_choice_str, state):
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(), gr.update(), gr.update(),
-            state
+            state,
+            gr.update(), gr.update()
         )
         
     target_idx = state.get("selected_idx", 1)
@@ -593,7 +656,12 @@ def save_single_person(name, notes, face_choice_str, state):
         target_idx = target_face["display_index"]
         
     person_name = name.strip()
-    person_id = db.get_or_create_person(person_name, notes or "")
+    person_role = (role or "standard").strip().lower()
+    person_id = db.get_or_create_person(person_name, notes or "", role=person_role)
+    try:
+        db.update_person(person_id, person_name, notes or "", role=person_role)
+    except Exception:
+        pass
     
     orig_img_to_save = bgr if bgr is not None else target_face["crop_bgr"]
     orig_path = save_image_dedup(orig_img_to_save, UPLOADS_DIR, prefix="orig")
@@ -620,7 +688,7 @@ def save_single_person(name, notes, face_choice_str, state):
     
     if next_idx is not None:
         state["selected_idx"] = next_idx
-        msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}**! Sada upišite ime za sljedeću osobu sa slike (**Lice #{next_idx}**)."
+        msg = f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}** ({format_role_badge(person_role)})! Sada upišite ime za sljedeću osobu sa slike (**Lice #{next_idx}**)."
         name_out = ""
         notes_out = ""
         btn_text = "💾 Spremi odabrano lice u bazu"
@@ -628,12 +696,14 @@ def save_single_person(name, notes, face_choice_str, state):
         avatar_html = render_person_avatar_html(None)
         edit_name = ""
         edit_notes = ""
+        role_out = "standard"
+        edit_role = "standard"
     else:
         # Sve osobe sa slike su spremljene ili je pojedinačni portret (najčešći slučaj)
         # Osoba ostaje trajno selektirana radi fluidnog unosa dodatnih slika!
         state["selected_idx"] = 1
         msg = (
-            f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}** (ukupno {len(samples)} slika)!\n"
+            f"🎉 **Lice #{target_idx}** uspješno spremljeno za osobu **{person_name}** ({format_role_badge(person_role)}, ukupno {len(samples)} slika)!\n"
             f"✨ **{person_name}** ostaje odabran(a) – samo učitajte sljedeću sliku ili snimite kamerom i kliknite **'Spremi dodatno lice'** za novi uzorak."
         )
         name_out = person_name
@@ -643,6 +713,8 @@ def save_single_person(name, notes, face_choice_str, state):
         avatar_html = render_person_avatar_html(person_id)
         edit_name = person_name
         edit_notes = notes or ""
+        role_out = person_role
+        edit_role = person_role
         
     annotated_rgb = render_annotated_group_image(
         bgr, faces,
@@ -687,7 +759,9 @@ def save_single_person(name, notes, face_choice_str, state):
         edit_name,
         edit_notes,
         new_gallery,
-        state
+        state,
+        edit_role,
+        role_out
     )
 
 def clear_single_form():
@@ -701,7 +775,8 @@ def clear_single_form():
         "💾 Spremi odabrano lice u bazu", "Formular očišćen za novu osobu.",
         gr.update(value=None),
         empty_state,
-        render_person_avatar_html(None)
+        render_person_avatar_html(None),
+        "standard"
     )
 
 # ---------------- MASOVNI (BATCH) UNOS ----------------
@@ -788,6 +863,8 @@ def view_person_details(selected_person_str):
             
     count = len(samples)
     badge = get_profile_badge(count)
+    p_role = person.get("role", "standard")
+    role_display = format_role_badge(p_role)
     if count == 1:
         rec = "💡 **Savjet za točnost:** Osoba ima samo 1 sliku. Dodajte sliku pod blagim kutom (polu-profil) ili s osmijehom kako bi prepoznavanje bilo otporno na kretanje i različito osvjetljenje."
         centroid_status = "Korišten je pojedinačni vektor."
@@ -800,6 +877,7 @@ def view_person_details(selected_person_str):
 
     info_text = f"""
     ### 👤 {person['name']}
+    * **Sigurnosni status / Uloga:** {role_display}
     * **Kvaliteta profila:** {badge}
     * **Biometrijski model:** {centroid_status}
     * **Bilješke:** {person['notes'] or 'Nema bilješki'}
@@ -844,7 +922,8 @@ def on_table_select(table_data, is_multi_mode, current_batch, evt: gr.SelectData
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             gr.update(), render_person_avatar_html(None),
             gr.update(), gr.update(), "",
-            gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update()
         )
         
     row_idx = evt.index[0]
@@ -868,7 +947,8 @@ def on_table_select(table_data, is_multi_mode, current_batch, evt: gr.SelectData
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             gr.update(), render_person_avatar_html(None),
             gr.update(), gr.update(), "",
-            gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update()
         )
         
     p = db.get_person(person_id)
@@ -878,7 +958,8 @@ def on_table_select(table_data, is_multi_mode, current_batch, evt: gr.SelectData
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             gr.update(), render_person_avatar_html(None),
             gr.update(), gr.update(), "",
-            gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update()
         )
         
     choice = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
@@ -898,7 +979,8 @@ def on_table_select(table_data, is_multi_mode, current_batch, evt: gr.SelectData
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(), gr.update(),
             gr.update(), gr.update(), gr.update(),
-            batch_list, btn_label, status_txt
+            batch_list, btn_label, status_txt,
+            gr.update(), gr.update()
         )
 
     gallery, info, sample_drop = view_person_details(choice)
@@ -906,8 +988,9 @@ def on_table_select(table_data, is_multi_mode, current_batch, evt: gr.SelectData
     
     name_val = p["name"]
     notes_val = p["notes"] or ""
+    role_val = p.get("role", "standard")
     btn_text = f"💾 Spremi dodatno lice za: {p['name']}"
-    status_msg = f"📌 Odabrano za unos novih slika: **{p['name']}** ({p['sample_count']} slika). Učitajte sliku i kliknite Spremi."
+    status_msg = f"📌 Odabrano za unos novih slika: **{p['name']}** ({p['sample_count']} slika, {format_role_badge(role_val)}). Učitajte sliku i kliknite Spremi."
     
     return (
         choice, gallery, info, sample_drop,
@@ -915,7 +998,8 @@ def on_table_select(table_data, is_multi_mode, current_batch, evt: gr.SelectData
         gr.update(value=choice),
         avatar_html,
         name_val, notes_val, "",
-        gr.update(), gr.update(), gr.update()
+        gr.update(), gr.update(), gr.update(),
+        role_val, role_val
     )
 
 def on_existing_person_picked(selected_choice):
@@ -925,7 +1009,8 @@ def on_existing_person_picked(selected_choice):
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             [], "", gr.update(), gr.update(),
             render_person_avatar_html(None),
-            gr.update(), gr.update(), ""
+            gr.update(), gr.update(), "",
+            "standard", "standard"
         )
         
     p = db.get_person(person_id)
@@ -934,13 +1019,15 @@ def on_existing_person_picked(selected_choice):
             gr.update(), gr.update(), "💾 Spremi odabrano lice u bazu", "",
             [], "", gr.update(), gr.update(),
             render_person_avatar_html(None),
-            gr.update(), gr.update(), ""
+            gr.update(), gr.update(), "",
+            "standard", "standard"
         )
         
     name_val = p["name"]
     notes_val = p["notes"] or ""
+    role_val = p.get("role", "standard")
     btn_text = f"💾 Spremi dodatno lice za: {p['name']}"
-    status_msg = f"📌 Odabrano za unos novih slika: **{p['name']}** ({p['sample_count']} slika). Učitajte sliku i kliknite Spremi."
+    status_msg = f"📌 Odabrano za unos novih slika: **{p['name']}** ({p['sample_count']} slika, {format_role_badge(role_val)}). Učitajte sliku i kliknite Spremi."
     choice_str = f"{p['id']}: {p['name']} ({p['sample_count']} slika)"
     gallery, info, sample_drop = view_person_details(choice_str)
     avatar_html = render_person_avatar_html(p["id"])
@@ -949,20 +1036,21 @@ def on_existing_person_picked(selected_choice):
         name_val, notes_val, btn_text, status_msg,
         gallery, info, sample_drop, gr.update(value=choice_str),
         avatar_html,
-        name_val, notes_val, ""
+        name_val, notes_val, "",
+        role_val, role_val
     )
 
 def on_manage_person_change(selected_person_str):
     person_id = parse_person_id(selected_person_str)
     if person_id is None:
-        return [], "Kliknite na osobu u tablici ili je pretražite iznad.", gr.update(choices=[], value=None), "", "", ""
+        return [], "Kliknite na osobu u tablici ili je pretražite iznad.", gr.update(choices=[], value=None), "", "", "", "standard"
         
     p = db.get_person(person_id)
     if not p:
-        return [], "Osoba nije pronađena u bazi.", gr.update(choices=[], value=None), "", "", ""
+        return [], "Osoba nije pronađena u bazi.", gr.update(choices=[], value=None), "", "", "", "standard"
         
     gallery, info, sample_drop = view_person_details(selected_person_str)
-    return gallery, info, sample_drop, p["name"], p["notes"] or "", ""
+    return gallery, info, sample_drop, p["name"], p["notes"] or "", "", p.get("role", "standard")
 
 def on_table_search_changed(search_query):
     rows, stats = refresh_database_view(search_query)
@@ -990,13 +1078,13 @@ def delete_selected_person(selected_person_str):
     table_view, stats_view = refresh_database_view()
     return msg, gr.update(choices=choices, value=None), gr.update(choices=choices, value=None), table_view, stats_view, [], "", "", "", ""
 
-def update_person_handler(selected_person_str, new_name, new_notes):
+def update_person_handler(selected_person_str, new_name, new_notes, new_role="standard"):
     person_id = parse_person_id(selected_person_str)
     if person_id is None:
         return (
             "⚠️ Nije odabrana valjana osoba za uređivanje. Kliknite na redak u tablici ili odaberite osobu iz padajućeg izbornika.",
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         )
     
     new_name = (new_name or "").strip()
@@ -1004,22 +1092,23 @@ def update_person_handler(selected_person_str, new_name, new_notes):
         return (
             "⚠️ Ime i prezime osobe ne smije biti prazno.",
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         )
     
+    role_clean = (new_role or "standard").strip().lower()
     try:
-        db.update_person(person_id, new_name, (new_notes or "").strip())
+        db.update_person(person_id, new_name, (new_notes or "").strip(), role=role_clean)
     except ValueError as ve:
         return (
             f"⚠️ {str(ve)}",
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         )
     except Exception as e:
         return (
             f"❌ Greška pri spremanju izmjena: {e}",
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         )
     
     updated_person = db.get_person(person_id)
@@ -1032,7 +1121,7 @@ def update_person_handler(selected_person_str, new_name, new_notes):
     avatar_html = render_person_avatar_html(person_id)
     btn_text = f"💾 Spremi odabrano lice za: {new_name}"
     
-    success_msg = f"✅ **Uspješno spremljeno:** Podaci za osobu **{new_name}** su ažurirani!"
+    success_msg = f"✅ **Uspješno spremljeno:** Podaci za osobu **{new_name}** ({format_role_badge(role_clean)}) su ažurirani!"
     
     return (
         success_msg,
@@ -1044,7 +1133,8 @@ def update_person_handler(selected_person_str, new_name, new_notes):
         (new_notes or "").strip(),
         info_text,
         avatar_html,
-        btn_text
+        btn_text,
+        role_clean
     )
 
 def delete_selected_sample(selected_sample_str, selected_person_str):
@@ -1298,7 +1388,102 @@ def handle_run_retention_cleanup(val: str) -> tuple:
     sys_report = hardware.get_system_report_markdown(DATA_DIR)
     return res["status_message"], sys_report
 
-def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", youtube_url="", video_file=None, start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_min=5):
+# ---------------- TELEGRAM NOTIFICATION HANDLERS ----------------
+def handle_save_telegram_config(enabled, token, chat_id, notify_bl, notify_vip, notify_spoof, notify_unk, cooldown, chat_id_sec="", chat_id_vip=""):
+    try:
+        config.save_telegram_config(
+            enabled=enabled,
+            bot_token=token,
+            chat_id=chat_id,
+            notify_blacklist=notify_bl,
+            notify_vip=notify_vip,
+            notify_spoof=notify_spoof,
+            notify_unknown=notify_unk,
+            cooldown_min=cooldown,
+            chat_id_security=chat_id_sec,
+            chat_id_vip=chat_id_vip
+        )
+        status_txt = "✅ **Telegram postavke su uspješno spremljene!**"
+        if enabled:
+            if not str(token or "").strip() or not str(chat_id or "").strip():
+                status_txt += "\n⚠️ *Napomena:* Obavijesti su omogućene, ali Bot Token ili Chat ID nisu uneseni. Unesite ih i pošaljite testnu poruku."
+            else:
+                status_txt += "\n🚀 Obavijesti su aktivne! Preporučujemo da kliknete **'📨 Pošalji testnu poruku'** za provjeru veze."
+        else:
+            status_txt += "\nℹ️ Telegram modul je trenutno isključen."
+        return status_txt
+    except Exception as e:
+        return f"❌ Greška pri spremanju Telegram postavki: {e}"
+
+def handle_test_telegram(token, chat_id):
+    try:
+        token_str = str(token or "").strip()
+        chat_str = str(chat_id or "").strip()
+        if not token_str or not chat_str:
+            return "⚠️ **Upozorenje:** Molimo unesite valjani Telegram Bot Token i Chat ID prije pokretanja testa."
+        ok, msg = notifier.test_telegram_connection(bot_token=token_str, chat_id=chat_str)
+        if ok:
+            return "✅ **Testna poruka je uspješno poslana!** Provjerite svoj Telegram račun ili grupu."
+        return f"⚠️ **Slanje nije uspjelo:** {msg}"
+    except Exception as e:
+        return f"❌ Greška pri testiranju Telegrama: {e}"
+
+# ---------------- EMAIL NOTIFICATION HANDLERS ----------------
+def handle_save_email_config(enabled, host, port, enc_mode, sender, password, recipients, notify_bl, notify_spoof, notify_vip, cooldown):
+    try:
+        use_tls = "STARTTLS" in str(enc_mode)
+        use_ssl = "SSL" in str(enc_mode)
+        config.save_email_config(
+            enabled=enabled,
+            smtp_host=str(host or "").strip(),
+            smtp_port=int(port or 587),
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            sender=str(sender or "").strip(),
+            password=str(password or "").strip(),
+            recipients=str(recipients or "").strip(),
+            notify_blacklist=bool(notify_bl),
+            notify_spoof=bool(notify_spoof),
+            notify_vip=bool(notify_vip),
+            cooldown_min=int(cooldown or 10)
+        )
+        msg = "✅ **E-mail postavke su uspješno spremljene!**"
+        if enabled:
+            if not str(host or "").strip() or not str(sender or "").strip() or not str(recipients or "").strip():
+                msg += "\n⚠️ *Napomena:* Obavijesti su uključene, ali SMTP poslužitelj, pošiljatelj ili primatelji nisu u potpunosti uneseni."
+            else:
+                msg += "\n📧 Sustav je spreman. Kliknite **'📨 Pošalji testni E-mail'** za provjeru ispravnosti veze."
+        else:
+            msg += "\nℹ️ E-mail modul je trenutno isključen."
+        return msg
+    except Exception as e:
+        return f"❌ Greška pri spremanju E-mail postavki: {e}"
+
+def handle_test_email(host, port, enc_mode, sender, password, recipients):
+    try:
+        use_tls = "STARTTLS" in str(enc_mode)
+        use_ssl = "SSL" in str(enc_mode)
+        h = str(host or "").strip()
+        s = str(sender or "").strip()
+        r = str(recipients or "").strip()
+        if not h or not s or not r:
+            return "⚠️ **Upozorenje:** Unesite SMTP poslužitelj, pošiljatelja i barem jednog primatelja prije testiranja."
+        ok, msg = notifier.test_email_connection(
+            smtp_host=h,
+            smtp_port=int(port or 587),
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            sender=s,
+            password=str(password or "").strip(),
+            recipients=r
+        )
+        if ok:
+            return f"✅ **Testni E-mail je uspješno poslan!** Provjerite ulaznu poštu ({r})."
+        return f"⚠️ **Slanje nije uspjelo:** {msg}"
+    except Exception as e:
+        return f"❌ Greška pri slanju testnog e-maila: {e}"
+
+def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", youtube_url="", video_file=None, start_sec=0, log_events=False, cooldown_sec=30, record_nvr=False, segment_min=5, anti_spoof=True):
     live_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_cam.py")
     if not os.path.exists(live_script):
         return "⚠️ Skripta `live_cam.py` nije pronađena."
@@ -1361,9 +1546,16 @@ def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", y
             cmd.extend(["--record-nvr", "--segment-min", str(int(segment_min))])
             target_name += f" [🔴 NVR: {int(segment_min)}m]"
 
+        if anti_spoof:
+            cmd.append("--anti-spoof")
+            target_name += " [🛡️ Anti-Spoof: ON]"
+        else:
+            cmd.append("--no-anti-spoof")
+            target_name += " [⚠️ Anti-Spoof: OFF]"
+
         subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
         
-        return f"🎥 **Live prepoznavanje [{target_name}] je uspješno pokrenuto u novom prozoru!**\n*(Pritisnite tipku `R` za NVR snimanje, `S` za spremanje kadra u mapu, `O` za otvaranje mape, `Q` za izlaz)*"
+        return f"🎥 **Live prepoznavanje [{target_name}] je uspješno pokrenuto u novom prozoru!**\n*(Pritisnite tipku `F` za Anti-Spoof, `R` za NVR, `S` za kadar, `O` za mapu, `Q` za izlaz)*"
     except Exception as e:
         return f"❌ Greška pri pokretanju: {e}"
 
@@ -1567,8 +1759,10 @@ def get_events_ui_data(search_query=""):
     first_crop = None
     first_info = "💡 *Kliknite na redak u tablici za pregled kadra kamere i detalja.*"
     first_video = None
+    first_id = None
     if events:
         first_ev = events[0]
+        first_id = first_ev["id"]
         c_p = first_ev.get("snapshot_path", "")
         cr_p = first_ev.get("crop_path", "")
         first_cam = c_p if (c_p and os.path.exists(c_p)) else (cr_p if (cr_p and os.path.exists(cr_p)) else None)
@@ -1583,7 +1777,7 @@ def get_events_ui_data(search_query=""):
             v_tag = f"\n* **📹 NVR Video snimka:** `{os.path.basename(v_p)}` (Detekcija na: **`{v_off:.1f}s`**)"
 
         first_info = (
-            f"### 📋 Detalji odabranog prolaska\n"
+            f"### 📋 Detalji odabranog prolaska #{first_id}\n"
             f"* **Prepoznata osoba:** **`{first_ev['person_name']}`**\n"
             f"* **Vrijeme prolaska:** `{first_ev['local_time']}`\n"
             f"* **Pouzdanost / Sličnost:** **`{first_ev['similarity']*100:.1f}%`**\n"
@@ -1592,7 +1786,8 @@ def get_events_ui_data(search_query=""):
             f"{v_tag}"
         )
         
-    return stats_md, table_rows, first_cam, first_crop, first_info, gr.update(value=first_video, visible=bool(first_video))
+    btn_del_update = gr.update(value=f"🗑️ Obriši ovaj prolazak (#{first_id})" if first_id else "🗑️ Obriši odabrani prolazak", visible=bool(first_id))
+    return stats_md, table_rows, first_cam, first_crop, first_info, gr.update(value=first_video, visible=bool(first_video)), first_id, btn_del_update
 
 def on_events_search(search_query=""):
     return get_events_ui_data(search_query)
@@ -1602,6 +1797,7 @@ def on_event_select(evt: gr.SelectData, search_query=""):
     row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
     if 0 <= row_idx < len(events):
         ev = events[row_idx]
+        ev_id = ev["id"]
         cam_p = ev.get("snapshot_path", "")
         crop_p = ev.get("crop_path", "")
         main_img = cam_p if (cam_p and os.path.exists(cam_p)) else (crop_p if (crop_p and os.path.exists(crop_p)) else None)
@@ -1617,7 +1813,7 @@ def on_event_select(evt: gr.SelectData, search_query=""):
             v_tag = f"\n* **📹 NVR Video snimka:** `{os.path.basename(v_p)}` (Detekcija na: **`{v_off:.1f}s`**)"
 
         info = (
-            f"### 📋 Detalji prolaska #{ev['id']}\n"
+            f"### 📋 Detalji prolaska #{ev_id}\n"
             f"* **Prepoznata osoba:** **`{ev['person_name']}`**\n"
             f"* **Vrijeme prolaska:** `{ev['local_time']}`\n"
             f"* **Pouzdanost / Sličnost:** **`{sim_pct}`**\n"
@@ -1625,12 +1821,58 @@ def on_event_select(evt: gr.SelectData, search_query=""):
             f"* **Prikaz slike:** {cam_desc}"
             f"{v_tag}"
         )
-        return main_img, crop_img, info, gr.update(value=v_p if has_video else None, visible=has_video)
-    return None, None, "Događaj nije pronađen.", gr.update(value=None, visible=False)
+        return main_img, crop_img, info, gr.update(value=v_p if has_video else None, visible=has_video), ev_id, gr.update(value=f"🗑️ Obriši ovaj prolazak (#{ev_id})", visible=True)
+    return None, None, "Događaj nije pronađen.", gr.update(value=None, visible=False), None, gr.update(visible=False)
 
-def handle_clear_events():
+def handle_open_clear_events_modal():
+    stats = db.get_detection_stats()
+    num_e = stats.get("total_events", 0)
+    num_p = stats.get("unique_persons", 0)
+    stats_md = (
+        f"📊 **Trenutno u evidenciji:** **{num_e}** zabilježenih prolazaka ({num_p} različitih osoba).\n\n"
+        f"⚠️ Potvrdom ove radnje **svi zapisi prolazaka i povezane fotografije bit će trajno obrisani**."
+    )
+    return gr.update(visible=True), stats_md, False, ""
+
+def handle_close_clear_events_modal():
+    return gr.update(visible=False), False, ""
+
+def handle_execute_clear_events(confirmed: bool, search_query=""):
+    if not confirmed:
+        return (
+            gr.update(visible=True),
+            "⚠️ **Morate označiti potvrdni okvir** kako biste omogućili brisanje cjelokupnog dnevnika!",
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        )
     db.clear_detection_events()
-    return get_events_ui_data("")
+    s_md, t_rows, cam_p, cr_p, inf, vid_up, f_id, b_del = get_events_ui_data(search_query)
+    return gr.update(visible=False), "", s_md, t_rows, cam_p, cr_p, inf, vid_up, f_id, b_del
+
+def handle_open_single_delete_event_modal(selected_id):
+    if not selected_id:
+        return gr.update(visible=False), ""
+    ev = db.get_detection_event_by_id(selected_id)
+    if not ev:
+        return gr.update(visible=False), ""
+    summary_md = (
+        f"### 📋 Podaci o prolasku koji će biti obrisan:\n"
+        f"* **ID prolaska:** `#{ev['id']}`\n"
+        f"* **Prepoznata osoba:** **`{ev['person_name']}`**\n"
+        f"* **Vrijeme prolaska:** `{ev['local_time']}`\n"
+        f"* **Izvor / Kamera:** `{ev['source_label']}`\n"
+        f"* **Sličnost:** `{ev['similarity']*100:.1f}%`\n\n"
+        f"⚠️ Ova radnja nepovratno briše ovaj pojedinačni zapis i povezanu sliku detekcije."
+    )
+    return gr.update(visible=True), summary_md
+
+def handle_close_single_delete_event_modal():
+    return gr.update(visible=False), ""
+
+def handle_execute_single_delete_event(selected_id, search_query=""):
+    if selected_id:
+        db.delete_detection_event(selected_id)
+    s_md, t_rows, cam_p, cr_p, inf, vid_up, f_id, b_del = get_events_ui_data(search_query)
+    return gr.update(visible=False), s_md, t_rows, cam_p, cr_p, inf, vid_up, f_id, b_del
 
 # ---------------- NVR ARCHIVE HELPERS ----------------
 def get_nvr_archive_ui_data(date_filter=""):
@@ -2947,6 +3189,149 @@ ul.options li.selected {
     border: 1px solid rgba(100, 116, 139, 0.35);
 }
 
+.cyber-detection-card.is-vip {
+    border-left: 3px solid #f59e0b !important;
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.22) !important;
+}
+
+.cyber-detection-card.is-blacklist {
+    border-left: 3px solid #ef4444 !important;
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.28) !important;
+}
+
+.card-name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.role-pill {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+}
+
+.role-verified {
+    background: rgba(16, 185, 129, 0.18);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.role-vip {
+    background: rgba(245, 185, 11, 0.22);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 185, 11, 0.5);
+    box-shadow: 0 0 8px rgba(245, 185, 11, 0.3);
+}
+
+.role-blacklist {
+    background: rgba(239, 68, 68, 0.22);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.5);
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
+}
+
+.role-possible {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.card-conf-track {
+    width: 100%;
+    height: 4px;
+    background: rgba(15, 23, 42, 0.7);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 5px;
+}
+
+.card-conf-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+}
+
+.match-success .card-conf-fill { background: linear-gradient(90deg, #059669, #10b981); }
+.match-warning .card-conf-fill { background: linear-gradient(90deg, #d97706, #f59e0b); }
+.match-unknown .card-conf-fill { background: linear-gradient(90deg, #475569, #64748b); }
+.is-vip .card-conf-fill { background: linear-gradient(90deg, #d97706, #f59e0b, #fbbf24) !important; }
+.is-blacklist .card-conf-fill { background: linear-gradient(90deg, #b91c1c, #ef4444) !important; }
+
+/* Cyber Shortcuts Card in Live Camera UI */
+.cyber-shortcuts-card {
+    background: rgba(13, 20, 36, 0.75);
+    border: 1px solid rgba(56, 189, 248, 0.20);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-top: 10px;
+    margin-bottom: 4px;
+    width: 100%;
+    box-sizing: border-box;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.shortcuts-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.shortcuts-badge {
+    background: rgba(6, 182, 212, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 5px;
+    letter-spacing: 0.5px;
+}
+
+.shortcuts-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #cbd5e1;
+}
+
+.shortcuts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 6px 10px;
+}
+
+.sc-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.73rem;
+    color: #94a3b8;
+}
+
+.sc-item kbd {
+    background: #1e293b;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    font-family: 'JetBrains Mono', monospace;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.sc-item span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 input[type="range"] {
     accent-color: #06b6d4 !important;
 }
@@ -3245,6 +3630,17 @@ HEAD_DARK_JS = """
             }
         });
         obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+        // Globalno sprječavanje nehotične navigacije prozora pri povlačenju datoteka (Drag & Drop)
+        window.addEventListener('dragover', function(e) {
+            e.preventDefault();
+        }, false);
+        window.addEventListener('drop', function(e) {
+            var target = e.target;
+            if (!target.closest('input[type="file"]') && !target.closest('.upload-container') && !target.closest('.dropzone') && !target.closest('[data-testid="image"]')) {
+                e.preventDefault();
+            }
+        }, false);
     })();
 </script>
 """
@@ -3306,7 +3702,7 @@ custom_theme = gr.themes.Soft(
     button_secondary_text_color_dark="#f8fafc"
 )
 
-with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
+with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
     # Per-session state (eliminates global variables and multi-user race conditions)
     rec_faces_state = gr.State([])
     single_enroll_state = gr.State({
@@ -3504,11 +3900,37 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             visible=False,
                             scale=2
                         )
+                    with gr.Row():
+                        cam_enable_spoof = gr.Checkbox(
+                            value=True,
+                            label="🛡️ Zaštita od lažiranja (Anti-Spoofing / Liveness)",
+                            info="Sprječava prevaru pokazivanjem fotografija ili ekrana mobitela. Isključite ako želite identificirati osobe sa slika na mobitelu.",
+                            scale=2
+                        )
 
                     with gr.Row():
                         btn_launch_live = gr.Button("🎥 Pokreni Live Kameru", variant="secondary", scale=2, elem_classes=["btn-cyber-live"])
                         btn_launch_grid = gr.Button("🎛️ Pokreni 2×2 Mrežu", variant="secondary", scale=2, visible=False, elem_classes=["btn-cyber-live"])
                         btn_open_snaps_quick = gr.Button("📂 Snimke (S)", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
+                    with gr.Row():
+                        live_shortcuts_html = gr.HTML("""
+                        <div class="cyber-shortcuts-card">
+                            <div class="shortcuts-header">
+                                <span class="shortcuts-badge">TIPKOVNICA & MIŠ</span>
+                                <span class="shortcuts-title">Brze kontrole u video prozoru:</span>
+                            </div>
+                            <div class="shortcuts-grid">
+                                <div class="sc-item"><kbd>SPACE</kbd> <span>Pauza / Nastavak</span></div>
+                                <div class="sc-item"><kbd>←</kbd> <kbd>→</kbd> <span>±5s skok</span></div>
+                                <div class="sc-item"><kbd>,</kbd> <kbd>.</kbd> <span>Kadar-po-kadar</span></div>
+                                <div class="sc-item"><kbd>0</kbd>–<kbd>9</kbd> <span>Skok na % videa</span></div>
+                                <div class="sc-item"><kbd>Miš</kbd> <span>Klik / vučenje trake</span></div>
+                                <div class="sc-item"><kbd>F</kbd> <span>AntiSpoof ON/OFF</span></div>
+                                <div class="sc-item"><kbd>M</kbd> <span>Filter (Samo zelena)</span></div>
+                                <div class="sc-item"><kbd>S</kbd> <span>Spremi kadar (Foto)</span></div>
+                            </div>
+                        </div>
+                        """)
                     
                 # 2. Srednji stupac: Vizualni rezultat (cca 42% širine)
                 with gr.Column(scale=5, min_width=380, elem_classes=["cyber-card"]):
@@ -3607,6 +4029,16 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                 btn_clear_form = gr.Button("🔄 Očisti", size="sm", scale=1, elem_classes=["btn-cyber-secondary"])
                                 
                             single_notes_input = gr.Textbox(label="Bilješke (opcionalno)", placeholder="npr. Član tima, IT odjel")
+                            single_role_input = gr.Dropdown(
+                                label="Sigurnosni status / Uloga osobe",
+                                choices=[
+                                    ("Standardna osoba / Korisnik", "standard"),
+                                    ("⭐ VIP uzvanik / Važna osoba", "vip"),
+                                    ("🚨 Crna lista / Nepoželjni (Zabrana)", "blacklist")
+                                ],
+                                value="standard",
+                                info="Određuje boju okvira na kameri i automatsko slanje Telegram alarma"
+                            )
                             
                             single_img_input = gr.Image(
                                 type="pil",
@@ -3712,7 +4144,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
                     db_stats_md = gr.Markdown("")
                     db_table = gr.Dataframe(
-                        headers=["ID", "Ime", "Broj slika", "Kvaliteta profila", "Bilješke", "Datum registracije"],
+                        headers=["ID", "Ime", "Uloga", "Broj slika", "Kvaliteta profila", "Bilješke", "Datum registracije"],
                         label="Popis osoba (Kliknite na bilo koji redak za automatski odabir osobe za unos)",
                         interactive=False,
                         max_height=480
@@ -3734,18 +4166,28 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                         
                         # Zona za naknadno uređivanje imena, prezimena i bilješki
                         with gr.Group(elem_classes=["cyber-card", "edit-person-card"]):
-                            gr.Markdown("#### ✏️ Uređivanje podataka odabrane osobe (Ime, prezime i bilješke)")
+                            gr.Markdown("#### ✏️ Uređivanje podataka odabrane osobe (Ime, uloga i bilješke)")
                             with gr.Row():
                                 edit_person_name = gr.Textbox(
                                     label="Ime i prezime",
                                     placeholder="Upišite novo ime...",
                                     scale=3
                                 )
+                                edit_person_role = gr.Dropdown(
+                                    label="Sigurnosni status / Uloga",
+                                    choices=[
+                                        ("Standardna osoba / Korisnik", "standard"),
+                                        ("⭐ VIP uzvanik / Važna osoba", "vip"),
+                                        ("🚨 Crna lista / Nepoželjni (Zabrana)", "blacklist")
+                                    ],
+                                    value="standard",
+                                    scale=2
+                                )
                                 edit_person_notes = gr.Textbox(
                                     label="Bilješke",
                                     placeholder="Upišite ili dopunite bilješku (odjel, uloga, opaske...)",
                                     lines=2,
-                                    scale=4
+                                    scale=3
                                 )
                             with gr.Row():
                                 btn_save_person_edit = gr.Button(
@@ -3956,8 +4398,9 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
         # ------------------ TAB 4: DNEVNIK PROLAZAKA (EVIDENCIJA) ------------------
         with gr.TabItem("📋 Dnevnik Prolazaka (Evidencija)") as tab_events:
-            ev_stats_init, ev_table_init, ev_cam_init, ev_crop_init, ev_info_init, ev_video_init = get_events_ui_data()
+            ev_stats_init, ev_table_init, ev_cam_init, ev_crop_init, ev_info_init, ev_video_init, ev_id_init, ev_del_btn_init = get_events_ui_data()
             events_stats_md = gr.Markdown(ev_stats_init)
+            selected_event_id_state = gr.State(ev_id_init)
             
             with gr.Row():
                 with gr.Column(scale=3):
@@ -3997,6 +4440,13 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                             height=140
                         )
                         event_details_md = gr.Markdown(ev_info_init)
+                    with gr.Row():
+                        btn_delete_single_event = gr.Button(
+                            value=f"🗑️ Obriši ovaj prolazak (#{ev_id_init})" if ev_id_init else "🗑️ Obriši odabrani prolazak",
+                            variant="stop",
+                            visible=bool(ev_id_init),
+                            scale=1
+                        )
                     event_video_player = gr.Video(
                         value=ev_video_init.get("value"),
                         visible=ev_video_init.get("visible", False),
@@ -4008,6 +4458,47 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                 btn_export_events_csv = gr.Button("📥 Izvezi cijeli dnevnik u CSV (Excel)", variant="primary", scale=1)
                 events_export_file = gr.File(label="Preuzmi izvezenu CSV datoteku", visible=False, scale=2)
             events_status_md = gr.Markdown("")
+
+            # ---------------- MODAL ZA POTVRDU BRISANJA CJELOKUPNOG DNEVNIKA ----------------
+            with gr.Group(visible=False, elem_classes=["cyber-modal-overlay"]) as clear_events_modal:
+                with gr.Group(elem_classes=["cyber-modal-box"]):
+                    gr.Markdown(
+                        """
+                        ## 🚨 UPOZORENJE: BRISANJE CJELOKUPNOG DNEVNIKA PROLAZAKA
+                        ---
+                        **Jeste li potpuno sigurni da želite trajno obrisati sve zabilježene prolaske iz evidencije?**
+                        
+                        * ⚠️ **Ova radnja je nepovratna!**
+                        * 📜 Svi povijesni zapisi detekcija i prolazaka bit će uklonjeni iz baze podataka.
+                        * 📷 Sve povezane fotografije kadrova i izreza lica vezane uz evidenciju bit će obrisane s diska.
+                        * 👥 Registrirane osobe i njihovi biometrijski profili u bazi **ostaju netaknuti**.
+                        """
+                    )
+                    clear_events_modal_stats = gr.Markdown("")
+                    clear_events_confirm_cb = gr.Checkbox(
+                        label="Razumijem posljedice i izričito potvrđujem trajno brisanje cjelokupnog dnevnika prolazaka",
+                        value=False,
+                        interactive=True
+                    )
+                    clear_events_modal_error = gr.Markdown("")
+                    with gr.Row():
+                        btn_cancel_clear_events = gr.Button("✖️ Odustani / Zatvori", variant="secondary", scale=1)
+                        btn_confirm_clear_events = gr.Button("🔥 Potvrdi i obriši cijeli dnevnik", variant="stop", elem_classes=["btn-cyber-danger"], scale=1)
+
+            # ---------------- MODAL ZA POTVRDU BRISANJA POJEDINAČNOG PROLASKA ----------------
+            with gr.Group(visible=False, elem_classes=["cyber-modal-overlay"]) as single_event_delete_modal:
+                with gr.Group(elem_classes=["cyber-modal-box"]):
+                    gr.Markdown(
+                        """
+                        ## 🗑️ POTVRDA BRISANJA ODABRANOG PROLASKA
+                        ---
+                        **Jeste li sigurni da želite obrisati ovaj zabilježeni prolazak iz evidencije?**
+                        """
+                    )
+                    single_event_delete_summary = gr.Markdown("")
+                    with gr.Row():
+                        btn_cancel_single_delete = gr.Button("✖️ Odustani", variant="secondary", scale=1)
+                        btn_confirm_single_delete = gr.Button("🗑️ Obriši ovaj zapis", variant="stop", elem_classes=["btn-cyber-danger"], scale=1)
 
         # ------------------ TAB 5: PAMETNI SORTER FOTOGRAFIJA ------------------
         with gr.TabItem("📸 Pametni Sorter Fotografija") as tab_photo_sorter:
@@ -4194,6 +4685,167 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
                                 btn_run_retention = gr.Button("🧹 Očisti stare podatke odmah", variant="secondary", elem_classes=["btn-cyber-primary"])
                                 retention_status_md = gr.Markdown("")
 
+                    with gr.Group(elem_classes=["cyber-card", "telegram-card"]):
+                        gr.Markdown("#### 📲 Telegram Instant Sigurnosne Obavijesti")
+                        gr.Markdown(
+                            "Povežite Argusface sa svojim Telegram računom ili sigurnosnim kanalom za **trenutne obavijesti s fotografijom lica** "
+                            "kada se detektira osoba s Crne liste, dolazak VIP uzvanika ili pokušaj lažiranja (Anti-Spoofing napad s mobitela/slike)."
+                        )
+                        init_tg = config.get_telegram_config()
+                        telegram_enabled_chk = gr.Checkbox(
+                            label="🔔 Omogući slanje obavijesti na Telegram",
+                            value=init_tg["enabled"],
+                            interactive=True
+                        )
+                        with gr.Row():
+                            telegram_token_input = gr.Textbox(
+                                label="Telegram Bot Token",
+                                placeholder="npr. 7123456789:AAHk-...",
+                                value=init_tg["bot_token"],
+                                type="password",
+                                scale=3,
+                                info="Token dobiven od @BotFather bota"
+                            )
+                            telegram_chat_id_input = gr.Textbox(
+                                label="Glavni Telegram Chat ID (ili ID grupe/kanala)",
+                                placeholder="npr. 123456789 ili -100123456789 (moguće više odvojeno zarezom)",
+                                value=init_tg["chat_id"],
+                                scale=2,
+                                info="Zadana adresa za obavijesti"
+                            )
+                        with gr.Accordion("🎯 Selektivno usmjeravanje kanala (Opcije za Zaštitare i Recepciju)", open=False, elem_classes=["cyber-accordion"]):
+                            gr.Markdown(
+                                "*Ostavite prazno ako svi alarmi idu u glavni Chat ID iznad.* "
+                                "Upišite poseban Chat ID grupe ili korisnika kako bi samo određeni odjel primao specifične alarme."
+                            )
+                            with gr.Row():
+                                telegram_chat_id_sec_input = gr.Textbox(
+                                    label="Chat ID za Službu Osiguranja / Zaštitare",
+                                    placeholder="npr. -10012345678 (Za Crnu listu i Anti-Spoof)",
+                                    value=init_tg.get("chat_id_security", ""),
+                                    scale=1
+                                )
+                                telegram_chat_id_vip_input = gr.Textbox(
+                                    label="Chat ID za Recepciju / Protokol",
+                                    placeholder="npr. -10098765432 (Za VIP dolaske)",
+                                    value=init_tg.get("chat_id_vip", ""),
+                                    scale=1
+                                )
+                        with gr.Row():
+                            telegram_notify_blacklist_chk = gr.Checkbox(
+                                label="🚨 Crna lista (Nepoželjni)",
+                                value=init_tg["notify_blacklist"],
+                                interactive=True
+                            )
+                            telegram_notify_vip_chk = gr.Checkbox(
+                                label="⭐ VIP dolazak",
+                                value=init_tg["notify_vip"],
+                                interactive=True
+                            )
+                            telegram_notify_spoof_chk = gr.Checkbox(
+                                label="🛡️ Pokušaj lažiranja (Anti-Spoof)",
+                                value=init_tg["notify_spoof"],
+                                interactive=True
+                            )
+                            telegram_notify_unknown_chk = gr.Checkbox(
+                                label="❓ Nepoznata lica",
+                                value=init_tg["notify_unknown"],
+                                interactive=True
+                            )
+                        telegram_cooldown_slider = gr.Slider(
+                            minimum=1,
+                            maximum=60,
+                            value=init_tg["cooldown_min"],
+                            step=1,
+                            label="Period hlađenja / Cooldown (minute)",
+                            info="Spriječava višestruko slanje poruka za istu osobu unutar zadanog broja minuta"
+                        )
+                        with gr.Row():
+                            btn_save_telegram_config = gr.Button("💾 Spremi postavke obavijesti", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
+                            btn_test_telegram = gr.Button("📨 Pošalji testnu poruku", variant="secondary", scale=2, elem_classes=["btn-cyber-secondary"])
+                        telegram_status_md = gr.Markdown("")
+
+                    with gr.Group(elem_classes=["cyber-card", "email-card"]):
+                        gr.Markdown("#### 📧 E-mail Sigurnosna Upozorenja (SMTP)")
+                        gr.Markdown(
+                            "Omogućite automatsko slanje formalnih **sigurnosnih e-mail izvještaja s priloženom slikom lica** "
+                            "na službene e-mail adrese uprave, voditelja osiguranja ili vanjske zaštitarske službe."
+                        )
+                        init_em = config.get_email_config()
+                        email_enabled_chk = gr.Checkbox(
+                            label="🔔 Omogući slanje sigurnosnih e-mail upozorenja",
+                            value=init_em["enabled"],
+                            interactive=True
+                        )
+                        with gr.Row():
+                            email_smtp_host = gr.Textbox(
+                                label="SMTP Poslužitelj (Host)",
+                                placeholder="npr. smtp.gmail.com ili smtp.office365.com",
+                                value=init_em["smtp_host"],
+                                scale=3
+                            )
+                            email_smtp_port = gr.Number(
+                                label="Port",
+                                value=init_em["smtp_port"],
+                                precision=0,
+                                scale=1
+                            )
+                            enc_default = "STARTTLS (Port 587)" if init_em["use_tls"] else ("SSL / TLS (Port 465)" if init_em["use_ssl"] else "Bez enkripcije")
+                            email_encryption_radio = gr.Radio(
+                                label="Enkripcija",
+                                choices=["STARTTLS (Port 587)", "SSL / TLS (Port 465)", "Bez enkripcije"],
+                                value=enc_default,
+                                scale=2
+                            )
+                        with gr.Row():
+                            email_sender = gr.Textbox(
+                                label="Pošiljatelj (Korisničko ime / Email)",
+                                placeholder="npr. argusface.sigurnost@firma.hr",
+                                value=init_em["sender"],
+                                scale=3
+                            )
+                            email_password = gr.Textbox(
+                                label="Lozinka / App Password",
+                                type="password",
+                                placeholder="Lozinka ili Google App Password",
+                                value=init_em["password"],
+                                scale=3
+                            )
+                        email_recipients = gr.Textbox(
+                            label="Primatelji upozorenja (jedan ili više e-mailova odvojenih zarezom)",
+                            placeholder="npr. zastita@firma.hr, voditelj.osiguranja@firma.hr, direktor@firma.hr",
+                            value=init_em["recipients"],
+                            info="Sve navedene adrese primit će formatiran HTML e-mail s detaljima i slikom incidenta"
+                        )
+                        with gr.Row():
+                            email_notify_blacklist_chk = gr.Checkbox(
+                                label="🚨 Crna lista (Nepoželjni)",
+                                value=init_em["notify_blacklist"],
+                                interactive=True
+                            )
+                            email_notify_spoof_chk = gr.Checkbox(
+                                label="🛡️ Pokušaj lažiranja (Anti-Spoof)",
+                                value=init_em["notify_spoof"],
+                                interactive=True
+                            )
+                            email_notify_vip_chk = gr.Checkbox(
+                                label="⭐ VIP dolazak",
+                                value=init_em["notify_vip"],
+                                interactive=True
+                            )
+                        email_cooldown_slider = gr.Slider(
+                            minimum=1,
+                            maximum=60,
+                            value=init_em["cooldown_min"],
+                            step=1,
+                            label="Period hlađenja / Cooldown (minute)",
+                            info="Spriječava preopterećenje pretinca uzastopnim porukama za istu osobu"
+                        )
+                        with gr.Row():
+                            btn_save_email_config = gr.Button("💾 Spremi E-mail postavke", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
+                            btn_test_email = gr.Button("📨 Pošalji testni E-mail", variant="secondary", scale=2, elem_classes=["btn-cyber-secondary"])
+                        email_status_md = gr.Markdown("")
+
             gr.Markdown("---")
             with gr.Accordion("⚖️ Pravne napomene, licence i regulatorna usklađenost (GDPR & EU AI Act)", open=True, elem_classes=["cyber-accordion"]):
                 gr.Markdown(
@@ -4267,7 +4919,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     # 5. Save single face -> advances to next unsaved face & keeps person selected for fluid multi-photo enrollment
     btn_save_single.click(
         fn=save_single_person,
-        inputs=[single_name_input, single_notes_input, single_face_selector, single_enroll_state],
+        inputs=[single_name_input, single_notes_input, single_face_selector, single_role_input, single_enroll_state],
         outputs=[
             single_save_status,
             manage_person_dropdown,
@@ -4285,7 +4937,9 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             edit_person_name,
             edit_person_notes,
             single_crops_gallery,
-            single_enroll_state
+            single_enroll_state,
+            edit_person_role,
+            single_role_input
         ]
     ).then(
         fn=view_person_details,
@@ -4315,7 +4969,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_face_selector, single_preview_crop, single_preview_info,
             btn_save_single, single_save_status,
             existing_person_picker, single_enroll_state,
-            selected_person_avatar
+            selected_person_avatar, single_role_input
         ]
     )
     
@@ -4327,7 +4981,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_name_input, single_notes_input, btn_save_single, single_save_status,
             person_gallery, person_info_md, sample_delete_dropdown, manage_person_dropdown,
             selected_person_avatar,
-            edit_person_name, edit_person_notes, edit_person_status
+            edit_person_name, edit_person_notes, edit_person_status,
+            single_role_input, edit_person_role
         ],
         show_progress="hidden"
     )
@@ -4469,7 +5124,7 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
 
     btn_launch_live.click(
         fn=handle_launch_live,
-        inputs=[cam_source_type, cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec, cam_enable_log, cam_cooldown_sec, cam_enable_nvr, cam_nvr_segment_min],
+        inputs=[cam_source_type, cam_usb_idx, cam_rtsp_url, cam_youtube_url, cam_video_file, cam_start_sec, cam_enable_log, cam_cooldown_sec, cam_enable_nvr, cam_nvr_segment_min, cam_enable_spoof],
         outputs=[rec_status_md]
     )
 
@@ -4519,7 +5174,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             existing_person_picker,
             selected_person_avatar,
             edit_person_name, edit_person_notes, edit_person_status,
-            batch_selected_dropdown, btn_open_batch_delete_modal, batch_action_status
+            batch_selected_dropdown, btn_open_batch_delete_modal, batch_action_status,
+            single_role_input, edit_person_role
         ],
         show_progress="hidden"
     )
@@ -4527,12 +5183,12 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     manage_person_dropdown.change(
         fn=on_manage_person_change,
         inputs=[manage_person_dropdown],
-        outputs=[person_gallery, person_info_md, sample_delete_dropdown, edit_person_name, edit_person_notes, edit_person_status]
+        outputs=[person_gallery, person_info_md, sample_delete_dropdown, edit_person_name, edit_person_notes, edit_person_status, edit_person_role]
     )
 
     btn_save_person_edit.click(
         fn=update_person_handler,
-        inputs=[manage_person_dropdown, edit_person_name, edit_person_notes],
+        inputs=[manage_person_dropdown, edit_person_name, edit_person_notes, edit_person_role],
         outputs=[
             edit_person_status,
             db_table,
@@ -4543,7 +5199,8 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
             single_notes_input,
             person_info_md,
             selected_person_avatar,
-            btn_save_single
+            btn_save_single,
+            single_role_input
         ]
     )
     
@@ -4710,38 +5367,73 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
     )
 
     # 9. Detection Events wiring
+    events_out_all = [
+        events_stats_md, events_table, event_camera_preview, event_crop_preview, 
+        event_details_md, event_video_player, selected_event_id_state, btn_delete_single_event
+    ]
+
     events_search_input.change(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
+        outputs=events_out_all
     )
 
     btn_refresh_events.click(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
-    )
-
-    btn_clear_events.click(
-        fn=handle_clear_events,
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
-    )
-
-    events_table.select(
-        fn=on_event_select,
-        inputs=[events_search_input],
-        outputs=[event_camera_preview, event_crop_preview, event_details_md, event_video_player]
-    )
-
-    btn_export_events_csv.click(
-        fn=handle_export_events_csv,
-        outputs=[events_export_file, events_status_md]
+        outputs=events_out_all
     )
 
     tab_events.select(
         fn=on_events_search,
         inputs=[events_search_input],
-        outputs=[events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player]
+        outputs=events_out_all
+    )
+
+    events_table.select(
+        fn=on_event_select,
+        inputs=[events_search_input],
+        outputs=[event_camera_preview, event_crop_preview, event_details_md, event_video_player, selected_event_id_state, btn_delete_single_event]
+    )
+
+    # Sigurnosni modal za brisanje cijelog dnevnika
+    btn_clear_events.click(
+        fn=handle_open_clear_events_modal,
+        outputs=[clear_events_modal, clear_events_modal_stats, clear_events_confirm_cb, clear_events_modal_error]
+    )
+
+    btn_cancel_clear_events.click(
+        fn=handle_close_clear_events_modal,
+        outputs=[clear_events_modal, clear_events_confirm_cb, clear_events_modal_error]
+    )
+
+    btn_confirm_clear_events.click(
+        fn=handle_execute_clear_events,
+        inputs=[clear_events_confirm_cb, events_search_input],
+        outputs=[clear_events_modal, clear_events_modal_error, events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player, selected_event_id_state, btn_delete_single_event]
+    )
+
+    # Sigurnosni modal za brisanje pojedinačnog odabranog prolaska
+    btn_delete_single_event.click(
+        fn=handle_open_single_delete_event_modal,
+        inputs=[selected_event_id_state],
+        outputs=[single_event_delete_modal, single_event_delete_summary]
+    )
+
+    btn_cancel_single_delete.click(
+        fn=handle_close_single_delete_event_modal,
+        outputs=[single_event_delete_modal, single_event_delete_summary]
+    )
+
+    btn_confirm_single_delete.click(
+        fn=handle_execute_single_delete_event,
+        inputs=[selected_event_id_state, events_search_input],
+        outputs=[single_event_delete_modal, events_stats_md, events_table, event_camera_preview, event_crop_preview, event_details_md, event_video_player, selected_event_id_state, btn_delete_single_event]
+    )
+
+    btn_export_events_csv.click(
+        fn=handle_export_events_csv,
+        outputs=[events_export_file, events_status_md]
     )
 
     # 10. NVR Video Archive wiring in Tab 3
@@ -4818,6 +5510,60 @@ with gr.Blocks(title="UniFace - Sustav za Prepoznavanje Lica") as demo:
         fn=handle_run_retention_cleanup,
         inputs=[retention_period_radio],
         outputs=[retention_status_md, system_info_md]
+    )
+
+    btn_save_telegram_config.click(
+        fn=handle_save_telegram_config,
+        inputs=[
+            telegram_enabled_chk,
+            telegram_token_input,
+            telegram_chat_id_input,
+            telegram_notify_blacklist_chk,
+            telegram_notify_vip_chk,
+            telegram_notify_spoof_chk,
+            telegram_notify_unknown_chk,
+            telegram_cooldown_slider,
+            telegram_chat_id_sec_input,
+            telegram_chat_id_vip_input
+        ],
+        outputs=[telegram_status_md]
+    )
+
+    btn_test_telegram.click(
+        fn=handle_test_telegram,
+        inputs=[telegram_token_input, telegram_chat_id_input],
+        outputs=[telegram_status_md]
+    )
+
+    btn_save_email_config.click(
+        fn=handle_save_email_config,
+        inputs=[
+            email_enabled_chk,
+            email_smtp_host,
+            email_smtp_port,
+            email_encryption_radio,
+            email_sender,
+            email_password,
+            email_recipients,
+            email_notify_blacklist_chk,
+            email_notify_spoof_chk,
+            email_notify_vip_chk,
+            email_cooldown_slider
+        ],
+        outputs=[email_status_md]
+    )
+
+    btn_test_email.click(
+        fn=handle_test_email,
+        inputs=[
+            email_smtp_host,
+            email_smtp_port,
+            email_encryption_radio,
+            email_sender,
+            email_password,
+            email_recipients
+        ],
+        outputs=[email_status_md]
     )
 
     # ------------------ EVENT HANDLERS: TAB 6 PHOTO SORTER ------------------
