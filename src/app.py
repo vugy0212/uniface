@@ -2385,28 +2385,47 @@ body, html {
     padding: 0;
 }
 
+/* Custom Cyber Scrollbar */
+::-webkit-scrollbar {
+    width: 6px !important;
+    height: 6px !important;
+}
+::-webkit-scrollbar-track {
+    background: #070a12 !important;
+    border-radius: 4px !important;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(56, 189, 248, 0.3) !important;
+    border-radius: 4px !important;
+    transition: background 0.2s ease !important;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(56, 189, 248, 0.65) !important;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.5) !important;
+}
+
 .gradio-container {
     background: radial-gradient(circle at 50% 0%, #111d38 0%, #070a12 70%) !important;
     color: #f8fafc !important;
     max-width: 98% !important;
-    padding: 10px 16px !important;
+    padding: 8px 14px !important;
 }
 
-/* Header Bar */
+/* Header Bar with Deep Glassmorphism */
 .cyber-header-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: rgba(13, 20, 36, 0.85);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    background: rgba(13, 20, 36, 0.75);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
     border: 1px solid var(--cyber-card-border);
     border-radius: 14px;
-    padding: 14px 22px;
-    margin-bottom: 14px;
+    padding: 10px 18px;
+    margin-bottom: 10px;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     flex-wrap: wrap;
-    gap: 14px;
+    gap: 12px;
 }
 
 .header-left {
@@ -2502,6 +2521,12 @@ body, html {
     color: #a5b4fc;
 }
 
+.pill-db {
+    background: rgba(14, 165, 233, 0.12) !important;
+    border-color: rgba(56, 189, 248, 0.35) !important;
+    color: #38bdf8 !important;
+}
+
 .pill-dot {
     width: 8px;
     height: 8px;
@@ -2524,15 +2549,18 @@ body, html {
     font-weight: bold;
 }
 
-/* Tabs Styling - High Visibility & Crisp Contrast */
+/* Tabs Styling - Glassmorphic High Visibility & Crisp Contrast */
 .tabs > .tab-nav,
 div[role="tablist"] {
-    background: rgba(13, 20, 36, 0.85) !important;
+    background: rgba(13, 20, 36, 0.75) !important;
+    backdrop-filter: blur(14px) !important;
+    -webkit-backdrop-filter: blur(14px) !important;
     border-radius: 12px !important;
-    padding: 6px !important;
-    border: 1px solid rgba(56, 189, 248, 0.25) !important;
-    gap: 8px !important;
-    margin-bottom: 14px !important;
+    padding: 5px !important;
+    border: 1px solid rgba(56, 189, 248, 0.22) !important;
+    gap: 6px !important;
+    margin-bottom: 12px !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
 .tabs > .tab-nav > button,
@@ -2540,12 +2568,13 @@ div[role="tablist"] button,
 button[role="tab"] {
     color: #cbd5e1 !important;
     font-weight: 600 !important;
-    font-size: 0.92rem !important;
+    font-size: 0.88rem !important;
     border-radius: 8px !important;
-    padding: 8px 16px !important;
-    border: 1px solid rgba(56, 189, 248, 0.15) !important;
-    background: rgba(15, 23, 42, 0.6) !important;
-    transition: all 0.2s ease !important;
+    padding: 7px 15px !important;
+    border: 1px solid rgba(56, 189, 248, 0.12) !important;
+    background: rgba(15, 23, 42, 0.55) !important;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative !important;
 }
 
 .tabs > .tab-nav > button:hover,
@@ -2554,6 +2583,7 @@ button[role="tab"]:hover {
     color: #38bdf8 !important;
     background: rgba(56, 189, 248, 0.15) !important;
     border-color: rgba(56, 189, 248, 0.4) !important;
+    transform: translateY(-1px) !important;
 }
 
 .tabs > .tab-nav > button.selected,
@@ -2564,6 +2594,19 @@ button[role="tab"][aria-selected="true"] {
     background: linear-gradient(135deg, rgba(6, 182, 212, 0.35) 0%, rgba(16, 185, 129, 0.25) 100%) !important;
     border: 1px solid rgba(6, 182, 212, 0.65) !important;
     box-shadow: 0 0 16px rgba(6, 182, 212, 0.35) !important;
+}
+
+.tabs > .tab-nav > button.selected::after,
+div[role="tablist"] button[aria-selected="true"]::after {
+    content: '' !important;
+    position: absolute !important;
+    bottom: -1px !important;
+    left: 15% !important;
+    width: 70% !important;
+    height: 2px !important;
+    background: #38bdf8 !important;
+    box-shadow: 0 0 8px #38bdf8 !important;
+    border-radius: 2px !important;
 }
 
 /* Image Upload & Dropzone - Eliminate ALL stark white backgrounds */
@@ -2866,15 +2909,22 @@ ul.options li.selected {
 
 /* Cyber Cards & Panels */
 .cyber-card {
-    background: rgba(13, 20, 36, 0.85) !important;
-    backdrop-filter: blur(12px) !important;
+    background: rgba(13, 20, 36, 0.78) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
     border: 1px solid var(--cyber-card-border) !important;
     border-radius: 14px !important;
     padding: 14px !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease !important;
 }
 
-/* Buttons */
+.cyber-card:hover {
+    border-color: rgba(56, 189, 248, 0.38) !important;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Buttons with Micro-Interactions */
 .btn-cyber-primary {
     background: linear-gradient(135deg, #059669 0%, #0284c7 100%) !important;
     color: #ffffff !important;
@@ -2882,13 +2932,19 @@ ul.options li.selected {
     border: 1px solid rgba(56, 189, 248, 0.4) !important;
     border-radius: 10px !important;
     box-shadow: 0 4px 14px rgba(6, 182, 212, 0.3) !important;
-    transition: all 0.25s ease !important;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    cursor: pointer !important;
 }
 
 .btn-cyber-primary:hover {
-    transform: translateY(-1px) !important;
-    box-shadow: 0 6px 20px rgba(6, 182, 212, 0.55) !important;
-    filter: brightness(1.1) !important;
+    transform: translateY(-1.5px) !important;
+    box-shadow: 0 6px 22px rgba(6, 182, 212, 0.6) !important;
+    filter: brightness(1.12) !important;
+}
+
+.btn-cyber-primary:active {
+    transform: translateY(0.5px) !important;
+    box-shadow: 0 2px 8px rgba(6, 182, 212, 0.4) !important;
 }
 
 .btn-cyber-live {
@@ -2898,14 +2954,21 @@ ul.options li.selected {
     border: 1px solid rgba(56, 189, 248, 0.4) !important;
     border-radius: 10px !important;
     box-shadow: 0 2px 10px rgba(56, 189, 248, 0.15) !important;
-    transition: all 0.25s ease !important;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    cursor: pointer !important;
 }
 
 .btn-cyber-live:hover {
-    background: rgba(56, 189, 248, 0.15) !important;
+    background: rgba(56, 189, 248, 0.18) !important;
     border-color: #38bdf8 !important;
     color: #ffffff !important;
-    box-shadow: 0 0 16px rgba(56, 189, 248, 0.4) !important;
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.45) !important;
+    transform: translateY(-1.5px) !important;
+}
+
+.btn-cyber-live:active {
+    transform: translateY(0.5px) !important;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.3) !important;
 }
 
 .btn-cyber-secondary {
@@ -2913,12 +2976,20 @@ ul.options li.selected {
     color: #e2e8f0 !important;
     border: 1px solid rgba(148, 163, 184, 0.25) !important;
     border-radius: 10px !important;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    cursor: pointer !important;
 }
 
 .btn-cyber-secondary:hover {
     background: rgba(51, 65, 85, 0.9) !important;
     border-color: rgba(56, 189, 248, 0.5) !important;
     color: #ffffff !important;
+    transform: translateY(-1.5px) !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4) !important;
+}
+
+.btn-cyber-secondary:active {
+    transform: translateY(0.5px) !important;
 }
 
 /* Visual Panel & HUD Frame */
@@ -3712,9 +3783,14 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
         "saved_indices": set()
     })
 
+    _hw_accel_name, _ = hardware.get_onnx_acceleration_status()
+    _db_stats = db.get_stats()
+    _p_count = _db_stats.get("total_persons", 0)
+    _s_count = _db_stats.get("total_samples", 0)
+
     # Modern Cyber Glassmorphism Header Bar
     gr.HTML(
-        """
+        f"""
         <div class="cyber-header-bar">
             <div class="header-left">
                 <div class="header-logo-icon">
@@ -3736,18 +3812,22 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                 </div>
             </div>
             <div class="header-badges">
-                <div class="header-pill pill-success">
+                <div class="header-pill pill-success" title="Svi podaci se obrađuju isključivo na lokalnom računalu">
                     <span class="pill-dot pulse-green"></span>
-                    <span>100% Lokalno i sigurno</span>
+                    <span>100% Lokalno</span>
+                </div>
+                <div class="header-pill pill-ai" title="Detektirano hardversko ubrzanje inferencije">
+                    <span class="pill-icon">⚡</span>
+                    <span>{_hw_accel_name}</span>
+                </div>
+                <div class="header-pill pill-db" title="Broj registriranih osoba i biometrijskih uzoraka u bazi">
+                    <span class="pill-icon">👥</span>
+                    <span>{_p_count} osoba • {_s_count} uzoraka</span>
                 </div>
                 <div class="header-pill pill-neutral">
                     <span class="pill-icon">🖥️</span>
-                    <span>Server aktivan</span>
+                    <span>Sustav spreman</span>
                     <span class="pill-check">✓</span>
-                </div>
-                <div class="header-pill pill-ai">
-                    <span class="pill-icon">🧠</span>
-                    <span>AI Engine (ONNX)</span>
                 </div>
             </div>
         </div>
