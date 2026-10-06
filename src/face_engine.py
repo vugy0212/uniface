@@ -15,8 +15,11 @@ if os.path.isdir(_local_models_dir):
 
 from uniface import FaceAnalyzer, RetinaFace, EdgeFace
 from uniface.recognition.edgeface import EdgeFaceWeights
+from uniface.spoofing import MiniFASNet
 
 _analyzer_instances = {}
+_spoofer_instances = {}
+
 
 def get_execution_providers(device: str = "AUTO") -> list[str]:
     """
@@ -87,21 +90,69 @@ def get_analyzer(device="AUTO", with_attributes=False):
             _analyzer_instances[key] = FaceAnalyzer(detector=detector, recognizer=recognizer, predictors=[])
     return _analyzer_instances[key]
 
+def get_spoofer(device="AUTO"):
+    """
+    Returns cached MiniFASNet V2 anti-spoofing engine (BSD/MIT ready, 1.2 MB)
+    with prioritized hardware acceleration.
+    """
+    global _spoofer_instances
+    key = (device or "AUTO").upper().strip()
+    if key not in _spoofer_instances:
+        providers = get_execution_providers(device)
+        try:
+            _spoofer_instances[key] = MiniFASNet(providers=providers)
+        except Exception:
+            _spoofer_instances[key] = MiniFASNet(providers=["CPUExecutionProvider"])
+    return _spoofer_instances[key]
+
+def check_liveness(image_bgr: np.ndarray, bbox, device="AUTO") -> tuple[bool, float]:
+    """
+    Analyzes presentation attack / spoofing on a detected face (photo, phone/tablet screen, paper).
+    Returns:
+        (is_real: bool, confidence: float)
+    """
+    if image_bgr is None or bbox is None or len(bbox) < 4:
+        return True, 0.5
+    try:
+        spoofer = get_spoofer(device)
+        res = spoofer.predict(image_bgr, bbox)
+        return bool(res.is_real), float(res.confidence)
+    except Exception as e:
+        return True, 0.5
+
 def crop_face(image: np.ndarray, bbox, margin_ratio=0.25):
+    if image is None or image.size == 0:
+        return np.zeros((100, 100, 3), dtype=np.uint8)
     h, w = image.shape[:2]
-    x1, y1, x2, y2 = map(int, bbox)
+    try:
+        x1, y1, x2, y2 = map(int, bbox)
+    except Exception:
+        return np.zeros((100, 100, 3), dtype=np.uint8)
     
-    bw = x2 - x1
-    bh = y2 - y1
+    if x1 > x2:
+        x1, x2 = x2, x1
+    if y1 > y2:
+        y1, y2 = y2, y1
+        
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
     
     x1 = max(0, int(x1 - bw * margin_ratio))
     y1 = max(0, int(y1 - bh * margin_ratio))
     x2 = min(w, int(x2 + bw * margin_ratio))
     y2 = min(h, int(y2 + bh * margin_ratio))
     
-    return image[y1:y2, x1:x2].copy()
+    if x2 <= x1 or y2 <= y1:
+        x1, y1, x2, y2 = 0, 0, min(w, 100), min(h, 100)
+        
+    crop = image[y1:y2, x1:x2].copy()
+    if crop.size == 0 or crop.shape[0] == 0 or crop.shape[1] == 0:
+        return np.zeros((100, 100, 3), dtype=np.uint8)
+    return crop
 
-def extract_faces_from_image(image_bgr: np.ndarray, device="AUTO", with_attributes=False):
+def extract_faces_from_image(image_bgr: np.ndarray, device="AUTO", with_attributes=False, check_spoofing=False):
+    if image_bgr is None or not isinstance(image_bgr, np.ndarray) or image_bgr.size == 0:
+        return []
     analyzer = get_analyzer(device, with_attributes=with_attributes)
     faces = analyzer.analyze(image_bgr)
     
@@ -113,6 +164,11 @@ def extract_faces_from_image(image_bgr: np.ndarray, device="AUTO", with_attribut
             norm = np.linalg.norm(emb)
             if norm > 0:
                 emb = emb / norm
+        
+        is_real = True
+        liveness_conf = 1.0
+        if check_spoofing:
+            is_real, liveness_conf = check_liveness(image_bgr, face.bbox, device=device)
                 
         extracted.append({
             "index": idx,
@@ -121,6 +177,8 @@ def extract_faces_from_image(image_bgr: np.ndarray, device="AUTO", with_attribut
             "confidence": float(face.confidence) if face.confidence is not None else 1.0,
             "embedding": emb,
             "crop_bgr": crop,
+            "is_real": is_real,
+            "liveness_conf": liveness_conf,
             "age": getattr(face, "age", None),
             "gender": getattr(face, "gender", None),
             "race": getattr(face, "race", None)
@@ -466,6 +524,8 @@ def match_face(query_embedding: np.ndarray, profiles=None, threshold=0.50):
 def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, threshold=0.50,
                          draw_landmarks=False, blur_unknown=False, blur_all=False, device="AUTO", face_index=None,
                          cached_faces=None):
+    if image_bgr is None or not isinstance(image_bgr, np.ndarray) or image_bgr.size == 0:
+        return np.zeros((100, 100, 3), dtype=np.uint8), []
     annotated = image_bgr.copy()
     if cached_faces is not None and len(cached_faces) > 0:
         faces_data = cached_faces
@@ -527,7 +587,7 @@ def process_and_annotate(image_bgr: np.ndarray, all_samples: list[dict] = None, 
                 annotated[fy1:fy2, fx1:fx2] = blurred
 
         # 2. Draw clean border box
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 1)
         
         # 3. Position label: If near top of image (y1 < 28), draw INSIDE box to prevent cut-off and overlapping
         font = cv2.FONT_HERSHEY_SIMPLEX

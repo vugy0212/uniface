@@ -52,7 +52,7 @@ def log_debug(msg):
     except Exception:
         pass
 
-def draw_corner_box(img, pt1, pt2, color, thickness=2, corner_len=20):
+def draw_corner_box(img, pt1, pt2, color, thickness=1, corner_len=14):
     """Draws a modern bounding box with stylized corner accents."""
     x1, y1 = pt1
     x2, y2 = pt2
@@ -83,13 +83,13 @@ def draw_hud(frame, fps, num_faces, threshold, total_persons, paused=False, stat
     # 1. Top HUD bar
     top_bar = frame[0:55, 0:w].copy()
     overlay = np.zeros_like(top_bar)
-    cv2.rectangle(overlay, (0, 0), (w, 55), (15, 23, 42), -1) # Dark slate
+    cv2.rectangle(overlay, (0, 0), (w, 55), (22, 27, 34), -1) # Dark slate
     cv2.addWeighted(overlay, 0.78, top_bar, 0.22, 0, top_bar)
     frame[0:55, 0:w] = top_bar
-    cv2.line(frame, (0, 55), (w, 55), (59, 130, 246), 2) # Blue accent line
+    cv2.line(frame, (0, 55), (w, 55), (38, 44, 54), 1) # Blue accent line
     
     # Top HUD text
-    cv2.putText(frame, "Argusface Live Camera", (15, 26), cv2.FONT_HERSHEY_DUPLEX, 0.68, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(frame, "ArgusFace Live Feed", (15, 26), cv2.FONT_HERSHEY_DUPLEX, 0.68, (255, 255, 255), 1, cv2.LINE_AA)
     
     # Subtitle: camera label and badges
     sub_title = camera_label
@@ -310,7 +310,7 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
     
     accel_type, accel_status = hardware.get_onnx_acceleration_status()
     print("===================================================")
-    print("      Argusface Live Camera - Prepoznavanje Lica")
+    print("      ArgusFace Live Feed - Prepoznavanje Lica")
     print(f"      [{accel_status} ({accel_type})]")
     if anti_spoof:
         print("      [🛡️ Anti-Spoofing: AKTIVAN (Blokira fotografije i ekrane)]")
@@ -375,7 +375,7 @@ def run_live_camera(camera_source=0, threshold=0.45, process_interval=2, device=
         for _ in range(5):
             cap.read()
         
-    window_name = "Argusface Live Camera"
+    window_name = "ArgusFace Live Feed"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1280, 720)
 

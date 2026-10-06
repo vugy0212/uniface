@@ -3,11 +3,27 @@ import sys
 import uuid
 import re
 import cv2
+import html
+import atexit
 import numpy as np
 import pandas as pd
 import gradio as gr
 from PIL import Image
 from typing import Optional, List, Dict, Any
+
+_active_camera_processes: List[Any] = []
+
+def _cleanup_active_processes():
+    global _active_camera_processes
+    for p in list(_active_camera_processes):
+        try:
+            if p.poll() is None:
+                p.terminate()
+        except Exception:
+            pass
+    _active_camera_processes.clear()
+
+atexit.register(_cleanup_active_processes)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -111,29 +127,35 @@ def refresh_database_view(search_query=""):
 
 # ---------------- REAL-TIME DETECTION CARDS GENERATOR ----------------
 def generate_detection_cards_html(results, show_all_faces=False):
+    import base64
+    import datetime
+    now_str = datetime.datetime.now().strftime("%H:%M:%S")
+
     if not results:
-        return """
+        return f"""
         <div class="detection-panel-inner">
             <div class="panel-header">
                 <div class="panel-title">
-                    <span class="pulse-icon"></span> Real-time Detekcija
+                    <span class="status-indicator-dot"></span> Log Detekcija
                 </div>
-                <span class="panel-badge">Spremno</span>
+                <span class="panel-badge">Čekanje</span>
             </div>
             <div class="detection-empty-state">
-                <div class="radar-scan-box">
-                    <div class="radar-beam"></div>
+                <div class="empty-icon-box">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6E7681" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
                 </div>
-                <div class="empty-title">Čekanje na unos</div>
-                <div class="empty-sub">Učitajte fotografiju ili pokrenite live kameru za biometrijsku analizu lica u stvarnom vremenu.</div>
+                <div class="empty-title">Nema novih detekcija</div>
+                <div class="empty-sub">Učitajte sliku ili pokrenite live kameru za analizu.</div>
             </div>
         </div>
         """
-    import base64
-    
+
     num_total = len(results)
     num_recognized = sum(1 for r in results if r.get("status") == "Prepoznat")
-    
+
     if not show_all_faces:
         display_results = [r for r in results if r.get("status") == "Prepoznat"]
     else:
@@ -145,18 +167,15 @@ def generate_detection_cards_html(results, show_all_faces=False):
         <div class="detection-panel-inner">
             <div class="panel-header">
                 <div class="panel-title">
-                    <span class="pulse-icon active"></span> Real-time Detekcija
+                    <span class="status-indicator-dot active"></span> Log Detekcija
                 </div>
-                <span class="panel-badge active" style="color: #94a3b8; border-color: rgba(148, 163, 184, 0.4);">{badge_text}</span>
+                <span class="panel-badge">{badge_text}</span>
             </div>
             <div class="detection-empty-state">
-                <div class="radar-scan-box">
-                    <div class="radar-beam"></div>
-                </div>
-                <div class="empty-title" style="color: #f59e0b;">Nema prepoznatih lica</div>
+                <div class="empty-title" style="color: #F59E0B;">Nema prepoznatih lica</div>
                 <div class="empty-sub">
-                    Pronađeno je <b>{num_total}</b> lica u kadru, ali nijedno ne prelazi zadani prag.<br><br>
-                    Uključite kvačicu <i>"Prikaži i nepoznata lica"</i> iznad za prikaz svih lica s postotkom sličnosti ili snizite prag.
+                    Pronađeno je <b>{num_total}</b> lica, ali nijedno ne prelazi prag.<br>
+                    Uključite <i>"Prikaži i nepoznata lica"</i> za detalje.
                 </div>
             </div>
         </div>
@@ -174,18 +193,20 @@ def generate_detection_cards_html(results, show_all_faces=False):
                     img_src = f"data:image/jpeg;base64,{img_b64}"
             except Exception:
                 img_src = ""
-        
+
         sim_val = r.get("similarity", 0)
         pct = 0.0
         if isinstance(sim_val, (int, float)):
             pct = float(sim_val) * 100
-            sim_str = f"{pct:.1f}% Match"
         else:
-            sim_str = f"{sim_val} Match"
-            
+            try:
+                pct = float(str(sim_val).replace('%', '').strip())
+            except Exception:
+                pct = 0.0
+
         status = r.get("status", "Nepoznat")
         name = r.get("best_name", "Nepoznata osoba")
-        
+
         # Determine person role badge
         p_role = "standard"
         if status in ("Prepoznat", "Moguće poklapanje") and name not in ("Nepoznata osoba", "Nepoznato"):
@@ -193,72 +214,78 @@ def generate_detection_cards_html(results, show_all_faces=False):
                 p_role = db.get_person_role(name)
             except Exception:
                 p_role = "standard"
-                
+
+        stroke_color = "#10B981"
         if p_role == "blacklist":
-            badge_cls = "match-blacklist is-blacklist"
-            status_text = "Crna lista"
-            role_badge = '<span class="role-pill role-blacklist">🚨 CRNA LISTA</span>'
+            badge_cls = "match-blacklist"
+            role_badge = '<span class="role-pill role-blacklist">CRNA LISTA</span>'
+            stroke_color = "#EF4444"
         elif p_role == "vip":
-            badge_cls = "match-vip is-vip"
-            status_text = "VIP"
-            role_badge = '<span class="role-pill role-vip">⭐ VIP</span>'
+            badge_cls = "match-vip"
+            role_badge = '<span class="role-pill role-vip">VIP</span>'
+            stroke_color = "#38BDF8"
         elif status == "Prepoznat":
             badge_cls = "match-success"
-            status_text = "Prepoznato"
-            role_badge = '<span class="role-pill role-verified">✓ Verificirano</span>'
+            role_badge = '<span class="role-pill role-verified">OK</span>'
+            stroke_color = "#10B981"
         elif status == "Moguće poklapanje":
             badge_cls = "match-warning"
-            status_text = "Moguće"
-            role_badge = '<span class="role-pill role-possible">? Provjera</span>'
+            role_badge = '<span class="role-pill role-possible">PROVJERA</span>'
+            stroke_color = "#F59E0B"
         else:
             badge_cls = "match-unknown"
-            status_text = "Nepoznato"
             role_badge = ''
-            
-        age = r.get("age", "-")
-        gender = r.get("gender", "-")
-        meta_parts = []
-        if age and str(age) != "-":
-            meta_parts.append(f'<span class="meta-item"><i class="meta-label">Dob:</i> <b>~{age}g</b></span>')
-        if gender and str(gender) != "-":
-            meta_parts.append(f'<span class="meta-item"><i class="meta-label">Spol:</i> <b>{gender}</b></span>')
-        meta_html = ' <span class="meta-sep">•</span> '.join(meta_parts) if meta_parts else '<span class="meta-item">Biometrijski profil</span>'
-        
+            stroke_color = "#6E7681"
+
+        safe_name = html.escape(str(name))
+        safe_age = html.escape(str(r.get("age", "-")))
+        safe_gender = html.escape(str(r.get("gender", "-")))
+        meta_parts = [f'<span class="meta-time">{html.escape(now_str)}</span>']
+        if safe_age and safe_age != "-":
+            meta_parts.append(f'<span>~{safe_age}g</span>')
+        if safe_gender and safe_gender != "-":
+            meta_parts.append(f'<span>{safe_gender}</span>')
+        meta_html = ' <span class="meta-sep">•</span> '.join(meta_parts)
+
+        circ_svg = f"""
+        <div class="circle-gauge" title="Pouzdanost: {pct:.1f}%">
+            <svg viewBox="0 0 36 36" class="circular-chart">
+                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                <path class="circle-val" stroke="{stroke_color}" stroke-dasharray="{min(100.0, max(0.0, pct)):.0f}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                <text x="18" y="20.5" class="percentage">{pct:.0f}%</text>
+            </svg>
+        </div>
+        """
+
         cards.append(f"""
         <div class="cyber-detection-card {badge_cls}">
             <div class="card-avatar-wrap">
-                <img src="{img_src}" class="card-avatar" alt="{name}" />
-                <span class="card-status-dot"></span>
+                <img src="{img_src}" class="card-avatar" alt="{safe_name}" />
             </div>
             <div class="card-details">
                 <div class="card-name-row">
-                    <span class="card-name" title="{name}">{name}</span>
+                    <span class="card-name" title="{safe_name}">{safe_name}</span>
                     {role_badge}
                 </div>
                 <div class="card-meta">
                     {meta_html}
                 </div>
-                <div class="card-similarity-badge">
-                    <span class="sim-pill">{sim_str}</span>
-                </div>
-                <div class="card-conf-track" title="Sličnost: {pct:.1f}%">
-                    <div class="card-conf-fill" style="width: {min(100.0, max(6.0, pct)):.1f}%;"></div>
-                </div>
             </div>
+            {circ_svg}
         </div>
         """)
-        
+
     cards_html = "".join(cards)
     if not show_all_faces:
         badge_text = f"{num_recognized} prepoznato" if num_recognized == num_total else f"{num_recognized} / {num_total} lica"
     else:
         badge_text = f"{num_total} lica"
-        
+
     return f"""
     <div class="detection-panel-inner">
         <div class="panel-header">
             <div class="panel-title">
-                <span class="pulse-icon active"></span> Real-time Detekcija
+                <span class="status-indicator-dot active"></span> Log Detekcija
             </div>
             <span class="panel-badge active">{badge_text}</span>
         </div>
@@ -367,7 +394,9 @@ def quick_add_face_to_db(selected_face_str, new_name, rec_faces):
     except Exception as e:
         return f"❌ Pogrešan format odabira ({e})", gr.update(), gr.update(), gr.update(), gr.update()
         
-    person_name = new_name.strip()
+    person_name = re.sub(r'[\r\n\t\x00-\x1f]', '', str(new_name or "")).strip()[:100]
+    if not person_name:
+        return "⚠️ Molimo unesite valjano ime osobe.", gr.update(), gr.update(), gr.update(), gr.update()
     person_id = db.get_or_create_person(person_name)
     
     crop_filename = f"crop_{person_id}_{uuid.uuid4().hex[:8]}.jpg"
@@ -655,11 +684,22 @@ def save_single_person(name, notes, face_choice_str, role, state):
         target_face = faces[0]
         target_idx = target_face["display_index"]
         
-    person_name = name.strip()
+    person_name = re.sub(r'[\r\n\t\x00-\x1f]', '', str(name or "")).strip()[:100]
+    person_notes = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(notes or "")).strip()[:500]
+    if not person_name:
+        return (
+            "⚠️ Ime osobe ne može biti prazno ili sadržavati samo kontrolne znakove!",
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(),
+            state,
+            gr.update(), gr.update()
+        )
     person_role = (role or "standard").strip().lower()
-    person_id = db.get_or_create_person(person_name, notes or "", role=person_role)
+    person_id = db.get_or_create_person(person_name, person_notes, role=person_role)
     try:
-        db.update_person(person_id, person_name, notes or "", role=person_role)
+        db.update_person(person_id, person_name, person_notes, role=person_role)
     except Exception:
         pass
     
@@ -807,9 +847,13 @@ def batch_enroll_files(naming_mode, single_name, files):
         if naming_mode == "Ime iz naziva datoteke":
             person_name = clean_filename_to_name(base_display_name)
         else:
-            if not single_name or not single_name.strip():
+            if not single_name or not str(single_name).strip():
                 return "⚠️ Morate upisati ime osobe za sve slike.", gr.update(), gr.update(), gr.update(), gr.update()
-            person_name = single_name.strip()
+            person_name = str(single_name).strip()
+        person_name = re.sub(r'[\r\n\t\x00-\x1f]', '', person_name).strip()[:100]
+        if not person_name:
+            fail_list.append(f"{base_display_name} (neispravno ili prazno ime)")
+            continue
             
         person_id = db.get_or_create_person(person_name)
         
@@ -1087,7 +1131,8 @@ def update_person_handler(selected_person_str, new_name, new_notes, new_role="st
             gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         )
     
-    new_name = (new_name or "").strip()
+    new_name = re.sub(r'[\r\n\t\x00-\x1f]', '', str(new_name or "")).strip()[:100]
+    new_notes = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(new_notes or "")).strip()[:500]
     if not new_name:
         return (
             "⚠️ Ime i prezime osobe ne smije biti prazno.",
@@ -1097,7 +1142,7 @@ def update_person_handler(selected_person_str, new_name, new_notes, new_role="st
     
     role_clean = (new_role or "standard").strip().lower()
     try:
-        db.update_person(person_id, new_name, (new_notes or "").strip(), role=role_clean)
+        db.update_person(person_id, new_name, new_notes, role=role_clean)
     except ValueError as ve:
         return (
             f"⚠️ {str(ve)}",
@@ -1530,8 +1575,8 @@ def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", y
             source_arg = "0"
             target_name = "Kamera"
 
-        if not source_arg:
-            return "⚠️ Molimo unesite valjanu adresu ili odaberite izvor."
+        if not source_arg or source_arg.startswith("-"):
+            return "⚠️ Neispravna adresa izvora ili format (izvor ne smije biti prazan niti počinjati znakom '-')."
 
         cmd = [py_exe, live_script, "--source", source_arg]
         if start_sec and int(start_sec) > 0 and source_type in ("YouTube / Web Video", "Lokalna Video Datoteka"):
@@ -1553,7 +1598,9 @@ def handle_launch_live(source_type="USB Web Kamera", usb_idx="0", rtsp_url="", y
             cmd.append("--no-anti-spoof")
             target_name += " [⚠️ Anti-Spoof: OFF]"
 
-        subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
+        proc = subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
+        _active_camera_processes.append(proc)
+        _active_camera_processes[:] = [p for p in _active_camera_processes if p.poll() is None]
         
         return f"🎥 **Live prepoznavanje [{target_name}] je uspješno pokrenuto u novom prozoru!**\n*(Pritisnite tipku `F` za Anti-Spoof, `R` za NVR, `S` za kadar, `O` za mapu, `Q` za izlaz)*"
     except Exception as e:
@@ -1628,15 +1675,17 @@ def handle_launch_multicam(
             cmd.extend(["--record-nvr", "--segment-min", str(int(segment_min))])
 
         active_count = sum([
-            bool(c1_on and str(c1_src).strip()),
-            bool(c2_on and str(c2_src).strip()),
-            bool(c3_on and str(c3_src).strip()),
-            bool(c4_on and str(c4_src).strip())
+            bool(c1_on and str(c1_src).strip() and not str(c1_src).strip().startswith("-")),
+            bool(c2_on and str(c2_src).strip() and not str(c2_src).strip().startswith("-")),
+            bool(c3_on and str(c3_src).strip() and not str(c3_src).strip().startswith("-")),
+            bool(c4_on and str(c4_src).strip() and not str(c4_src).strip().startswith("-"))
         ])
         if active_count == 0:
-            return "⚠️ Morate omogućiti barem jednu kameru za 2×2 mrežu."
+            return "⚠️ Morate omogućiti barem jednu kameru s valjanom adresom za 2×2 mrežu."
 
-        subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
+        proc = subprocess.Popen(cmd, cwd=APP_DIR, env=env, creationflags=creationflags)
+        _active_camera_processes.append(proc)
+        _active_camera_processes[:] = [p for p in _active_camera_processes if p.poll() is None]
         nvr_tag = f" uz 24/7 NVR snimanje ({int(segment_min)}m segmenti)" if record_nvr else ""
         return f"🎛️ **Multi-Camera 2×2 mreža ({active_count} kamere) je uspješno pokrenuta u novom prozoru{nvr_tag}!**\n*(Pritisnite tipke `1`-`4` za Solo prikaz, `0` ili `ESC` za mrežu, `R` za NVR snimanje, `E` za evidenciju, `S` za kadar, `Q` za izlaz)*"
     except Exception as e:
@@ -2333,1348 +2382,795 @@ def handle_open_sorter_folder(folder_path: str):
 
 # ---------------- GRADIO UI THEME & CYBER STYLING ----------------
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root, :root.dark, :root.light, html, body {
-    --cyber-bg: #070a12;
-    --cyber-card: #0d1424;
-    --cyber-card-elevated: #111a30;
-    --cyber-card-border: rgba(56, 189, 248, 0.22);
-    --cyber-cyan: #06b6d4;
-    --cyber-emerald: #10b981;
-    --cyber-blue: #3b82f6;
-    --cyber-glow-cyan: 0 0 18px rgba(6, 182, 212, 0.35);
-    --cyber-glow-emerald: 0 0 18px rgba(16, 185, 129, 0.35);
-    --text-primary: #f8fafc;
-    --text-muted: #94a3b8;
+    --ind-bg: #0D1117;
+    --ind-card: #161B22;
+    --ind-card-hover: #1C2128;
+    --ind-border: #262C36;
+    --ind-border-subtle: #21262D;
+    --ind-blue: #2563EB;
+    --ind-blue-hover: #1D4ED8;
+    --ind-emerald: #10B981;
+    --ind-amber: #F59E0B;
+    --ind-red: #EF4444;
+    --text-primary: #F0F6FC;
+    --text-secondary: #C9D1D9;
+    --text-muted: #8B949E;
 
     /* Enforce Dark Theme Tokens on Gradio internals */
-    --background-fill-primary: #070a12 !important;
-    --background-fill-secondary: #0d1424 !important;
-    --block-background-fill: #0d1424 !important;
-    --block-border-color: rgba(56, 189, 248, 0.22) !important;
-    --block-label-background-fill: #0d1424 !important;
-    --block-label-text-color: #38bdf8 !important;
-    --block-title-text-color: #f8fafc !important;
-    --body-text-color: #f8fafc !important;
-    --body-text-color-subdued: #94a3b8 !important;
-    --input-background-fill: #090d16 !important;
-    --input-border-color: rgba(56, 189, 248, 0.25) !important;
-    --input-placeholder-color: #64748b !important;
-    --checkbox-background-color: #090d16 !important;
-    --checkbox-background-color-selected: #0284c7 !important;
-    --checkbox-border-color: rgba(56, 189, 248, 0.45) !important;
-    --checkbox-border-color-selected: #38bdf8 !important;
-    --checkbox-label-background-fill: #0d1424 !important;
-    --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.15) !important;
-    --checkbox-label-text-color: #f8fafc !important;
-    --checkbox-label-text-color-selected: #38bdf8 !important;
-    --panel-background-fill: #0d1424 !important;
-    --table-even-background-fill: #0d1424 !important;
-    --table-odd-background-fill: #090d16 !important;
-    --table-text-color: #f8fafc !important;
-    --border-color-primary: rgba(56, 189, 248, 0.22) !important;
+    --background-fill-primary: #0D1117 !important;
+    --background-fill-secondary: #161B22 !important;
+    --block-background-fill: #161B22 !important;
+    --block-border-color: #262C36 !important;
+    --block-radius: 6px !important;
+    --container-radius: 6px !important;
+    --block-label-background-fill: #161B22 !important;
+    --block-label-text-color: #8B949E !important;
+    --block-title-text-color: #F0F6FC !important;
+    --body-text-color: #C9D1D9 !important;
+    --body-text-color-subdued: #8B949E !important;
+    --input-background-fill: #0D1117 !important;
+    --input-border-color: #262C36 !important;
+    --input-radius: 6px !important;
+    --input-placeholder-color: #6E7681 !important;
+    --checkbox-background-color: #21262D !important;
+    --checkbox-background-color-selected: #2563EB !important;
+    --checkbox-border-color: #30363D !important;
+    --checkbox-border-color-selected: #3B82F6 !important;
+    --checkbox-label-background-fill: transparent !important;
+    --checkbox-label-text-color: #C9D1D9 !important;
+    --table-even-background-fill: #161B22 !important;
+    --table-odd-background-fill: #161B22 !important;
+    --table-text-color: #C9D1D9 !important;
+    --table-border-color: #21262D !important;
+    --border-color-primary: #262C36 !important;
     color-scheme: dark !important;
 }
 
 body, html {
-    background-color: #070a12 !important;
-    color: #f8fafc !important;
-    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    background-color: #0D1117 !important;
+    background: #0D1117 !important;
+    color: #C9D1D9 !important;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif !important;
     margin: 0;
     padding: 0;
 }
 
-/* Custom Cyber Scrollbar */
+/* Custom Minimalist Scrollbar */
 ::-webkit-scrollbar {
     width: 6px !important;
     height: 6px !important;
 }
 ::-webkit-scrollbar-track {
-    background: #070a12 !important;
-    border-radius: 4px !important;
+    background: #0D1117 !important;
 }
 ::-webkit-scrollbar-thumb {
-    background: rgba(56, 189, 248, 0.3) !important;
-    border-radius: 4px !important;
-    transition: background 0.2s ease !important;
+    background: #262C36 !important;
+    border-radius: 3px !important;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(56, 189, 248, 0.65) !important;
-    box-shadow: 0 0 8px rgba(56, 189, 248, 0.5) !important;
+    background: #30363D !important;
 }
 
 .gradio-container {
-    background: radial-gradient(circle at 50% 0%, #111d38 0%, #070a12 70%) !important;
-    color: #f8fafc !important;
-    max-width: 98% !important;
-    padding: 8px 14px !important;
+    background-color: #0D1117 !important;
+    background: #0D1117 !important;
+    color: #C9D1D9 !important;
+    max-width: 100% !important;
+    padding: 12px !important;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif !important;
 }
 
-/* Header Bar with Deep Glassmorphism */
+/* 1. Header Bar: Fixed, Minimalist, Matte #161B22 */
+.industrial-header-bar,
 .cyber-header-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: rgba(13, 20, 36, 0.75);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-    border: 1px solid var(--cyber-card-border);
-    border-radius: 14px;
-    padding: 10px 18px;
-    margin-bottom: 10px;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    flex-wrap: wrap;
-    gap: 12px;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    background: #161B22 !important;
+    background-color: #161B22 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    padding: 8px 16px !important;
+    margin-bottom: 12px !important;
+    flex-wrap: wrap !important;
+    gap: 10px !important;
+    box-shadow: none !important;
 }
 
 .header-left {
-    display: flex;
-    align-items: center;
-    gap: 14px;
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
 }
 
-.header-logo-icon {
-    width: 44px;
-    height: 44px;
-    border-radius: 12px;
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(16, 185, 129, 0.2));
-    border: 1px solid rgba(6, 182, 212, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #06b6d4;
-    box-shadow: 0 0 14px rgba(6, 182, 212, 0.3);
+.header-brand {
+    font-size: 1.15rem !important;
+    font-weight: 700 !important;
+    color: #F0F6FC !important;
+    letter-spacing: -0.01em !important;
 }
 
-.header-titles {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+.header-tagline {
+    font-size: 0.78rem !important;
+    color: #8B949E !important;
+    padding-left: 8px !important;
+    border-left: 1px solid #262C36 !important;
 }
 
-.header-main-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: #ffffff;
+.header-middle {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    flex-wrap: wrap !important;
 }
 
-.title-brand {
-    background: linear-gradient(135deg, #38bdf8 0%, #34d399 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-weight: 800;
-    letter-spacing: 0.02em;
+.status-pill {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    background: #21262D !important;
+    border: 1px solid #30363D !important;
+    border-radius: 6px !important;
+    padding: 3px 10px !important;
+    font-size: 0.78rem !important;
+    color: #C9D1D9 !important;
+    font-weight: 500 !important;
 }
 
-.title-divider {
-    color: #475569;
-    font-weight: 300;
+.status-dot {
+    width: 6px !important;
+    height: 6px !important;
+    border-radius: 50% !important;
+    flex-shrink: 0 !important;
 }
 
-.title-desc {
-    color: #f1f5f9;
-}
+.status-dot.green { background-color: #10B981 !important; }
+.status-dot.blue { background-color: #2563EB !important; }
+.status-dot.slate { background-color: #8B949E !important; }
 
-.header-subtitle {
-    font-size: 0.82rem;
-    color: #94a3b8;
-}
-
-.header-badges {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-
-.header-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 5px 13px;
-    border-radius: 9999px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    background: rgba(15, 23, 42, 0.7);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.pill-success {
-    background: rgba(16, 185, 129, 0.12);
-    border-color: rgba(16, 185, 129, 0.35);
-    color: #34d399;
-}
-
-.pill-neutral {
-    background: rgba(30, 41, 59, 0.7);
-    border-color: rgba(56, 189, 248, 0.25);
-    color: #93c5fd;
-}
-
-.pill-ai {
-    background: rgba(99, 102, 241, 0.12);
-    border-color: rgba(99, 102, 241, 0.35);
-    color: #a5b4fc;
-}
-
-.pill-db {
-    background: rgba(14, 165, 233, 0.12) !important;
-    border-color: rgba(56, 189, 248, 0.35) !important;
-    color: #38bdf8 !important;
-}
-
-.pill-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-}
-
-.pulse-green {
-    background-color: #10b981;
-    box-shadow: 0 0 8px #10b981;
-    animation: pulseDot 2s infinite ease-in-out;
-}
-
-@keyframes pulseDot {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.4; transform: scale(0.85); }
-}
-
-.pill-check {
-    color: #34d399;
-    font-weight: bold;
-}
-
-/* Tabs Styling - Glassmorphic High Visibility & Crisp Contrast */
+/* 2. Flat Navigation Tabs */
 .tabs > .tab-nav,
 div[role="tablist"] {
-    background: rgba(13, 20, 36, 0.75) !important;
-    backdrop-filter: blur(14px) !important;
-    -webkit-backdrop-filter: blur(14px) !important;
-    border-radius: 12px !important;
-    padding: 5px !important;
-    border: 1px solid rgba(56, 189, 248, 0.22) !important;
-    gap: 6px !important;
+    background: #161B22 !important;
+    border-radius: 6px !important;
+    padding: 4px !important;
+    border: 1px solid #262C36 !important;
+    gap: 4px !important;
     margin-bottom: 12px !important;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+    display: flex !important;
+    box-shadow: none !important;
 }
 
 .tabs > .tab-nav > button,
 div[role="tablist"] button,
 button[role="tab"] {
-    color: #cbd5e1 !important;
-    font-weight: 600 !important;
-    font-size: 0.88rem !important;
-    border-radius: 8px !important;
-    padding: 7px 15px !important;
-    border: 1px solid rgba(56, 189, 248, 0.12) !important;
-    background: rgba(15, 23, 42, 0.55) !important;
-    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    position: relative !important;
+    color: #8B949E !important;
+    font-weight: 500 !important;
+    font-size: 0.85rem !important;
+    border-radius: 6px !important;
+    padding: 6px 14px !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    transition: all 0.15s ease !important;
+    box-shadow: none !important;
 }
 
 .tabs > .tab-nav > button:hover,
 div[role="tablist"] button:hover,
 button[role="tab"]:hover {
-    color: #38bdf8 !important;
-    background: rgba(56, 189, 248, 0.15) !important;
-    border-color: rgba(56, 189, 248, 0.4) !important;
-    transform: translateY(-1px) !important;
+    color: #C9D1D9 !important;
+    background: #21262D !important;
+    border-color: #30363D !important;
+    transform: none !important;
 }
 
 .tabs > .tab-nav > button.selected,
 div[role="tablist"] button.selected,
 div[role="tablist"] button[aria-selected="true"],
 button[role="tab"][aria-selected="true"] {
-    color: #ffffff !important;
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.35) 0%, rgba(16, 185, 129, 0.25) 100%) !important;
-    border: 1px solid rgba(6, 182, 212, 0.65) !important;
-    box-shadow: 0 0 16px rgba(6, 182, 212, 0.35) !important;
+    color: #F0F6FC !important;
+    background: #21262D !important;
+    border: 1px solid #30363D !important;
+    font-weight: 600 !important;
+    box-shadow: none !important;
 }
 
 .tabs > .tab-nav > button.selected::after,
 div[role="tablist"] button[aria-selected="true"]::after {
-    content: '' !important;
-    position: absolute !important;
-    bottom: -1px !important;
-    left: 15% !important;
-    width: 70% !important;
-    height: 2px !important;
-    background: #38bdf8 !important;
-    box-shadow: 0 0 8px #38bdf8 !important;
-    border-radius: 2px !important;
+    display: none !important;
 }
 
-/* Image Upload & Dropzone - Eliminate ALL stark white backgrounds */
-.image-container,
-.upload-container,
-div[data-testid="image"],
-div[data-testid="image"] > div,
-.empty,
-.drop-zone,
-div.upload,
-.gr-box,
-div:has(> input[type="file"]) {
-    background: #0b111e !important;
-    background-color: #0b111e !important;
-    border: 1px dashed rgba(56, 189, 248, 0.35) !important;
-    border-radius: 12px !important;
-    color: #e2e8f0 !important;
-}
-
-.upload-container *,
-.image-container *,
-div[data-testid="image"] * {
-    color: #94a3b8 !important;
-}
-
-.upload-container button,
-div[data-testid="image"] button {
-    background: rgba(30, 41, 59, 0.85) !important;
-    border: 1px solid rgba(56, 189, 248, 0.35) !important;
-    color: #38bdf8 !important;
-    border-radius: 8px !important;
-}
-
-.upload-container button:hover,
-div[data-testid="image"] button:hover {
-    background: rgba(56, 189, 248, 0.25) !important;
-    color: #ffffff !important;
-}
-
-/* Checkboxes, Blocks, and Fieldsets */
+/* 3. Containers, Cards & Panels - Matte #161B22, 6px radius */
+.cyber-card,
 .block,
-label.block,
 fieldset.block,
 div.block,
+.gr-box,
+.panel {
+    background: #161B22 !important;
+    background-color: #161B22 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    padding: 12px !important;
+    box-shadow: none !important;
+    transition: none !important;
+}
+
+.cyber-card:hover,
+.block:hover {
+    border-color: #262C36 !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+
+/* 4. Video Viewport (Zone B) - Pure Matte Black */
+.cyber-preview-frame,
+div[data-testid="image"],
+div[data-testid="image"] > div,
+.image-container,
+.upload-container,
+.empty,
+.drop-zone {
+    background-color: #000000 !important;
+    background: #000000 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    color: #C9D1D9 !important;
+}
+
+div[data-testid="image"] button,
+.upload-container button {
+    background: #21262D !important;
+    border: 1px solid #30363D !important;
+    color: #C9D1D9 !important;
+    border-radius: 6px !important;
+}
+
+/* 5. Switch-Style Checkboxes (Zone A) */
 .gradio-checkbox,
-label:has(input[type="checkbox"]),
-label:has(input[type="radio"]),
-label.checkbox-label {
-    background: rgba(13, 20, 36, 0.9) !important;
-    background-color: rgba(13, 20, 36, 0.9) !important;
-    border: 1px solid rgba(56, 189, 248, 0.22) !important;
-    border-radius: 10px !important;
-    color: #f8fafc !important;
-    transition: all 0.2s ease !important;
-}
-
-label:has(input[type="checkbox"]:checked),
-label:has(input[type="radio"]:checked) {
-    background: rgba(14, 165, 233, 0.12) !important;
-    border-color: rgba(56, 189, 248, 0.55) !important;
-    box-shadow: 0 0 12px rgba(56, 189, 248, 0.15) !important;
-}
-
-label.block span,
-label:has(input[type="checkbox"]) span,
-label:has(input[type="radio"]) span,
-.gradio-checkbox span,
-.gradio-radio span,
-.block span {
-    color: #f8fafc !important;
-    font-weight: 500 !important;
-}
-
-label:has(input[type="checkbox"]:checked) span,
-label:has(input[type="radio"]:checked) span {
-    color: #38bdf8 !important;
-    font-weight: 600 !important;
-}
-
-label:has(input[type="checkbox"]),
-label:has(input[type="radio"]),
-label.checkbox-label,
-.gradio-checkbox label,
-.gradio-radio label {
+label:has(input[type="checkbox"]) {
+    display: flex !important;
+    align-items: center !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    padding: 4px 0 !important;
     cursor: pointer !important;
-    user-select: none !important;
+    color: #C9D1D9 !important;
+    box-shadow: none !important;
 }
 
-/* Explicit Cyber Checkbox Styling */
 input[type="checkbox"] {
     -webkit-appearance: none !important;
     -moz-appearance: none !important;
     appearance: none !important;
-    width: 20px !important;
-    height: 20px !important;
-    min-width: 20px !important;
-    min-height: 20px !important;
-    max-width: 20px !important;
-    max-height: 20px !important;
-    margin: 0 10px 0 0 !important;
-    cursor: pointer !important;
-    background-color: #090d16 !important;
-    border: 2px solid rgba(56, 189, 248, 0.5) !important;
-    border-radius: 5px !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    vertical-align: middle !important;
+    width: 32px !important;
+    height: 18px !important;
+    min-width: 32px !important;
+    min-height: 18px !important;
+    max-width: 32px !important;
+    max-height: 18px !important;
+    background: #21262D !important;
+    background-color: #21262D !important;
+    border: 1px solid #30363D !important;
+    border-radius: 10px !important;
     position: relative !important;
+    cursor: pointer !important;
     outline: none !important;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+    transition: all 0.18s ease !important;
+    margin: 0 10px 0 0 !important;
     flex-shrink: 0 !important;
+    box-shadow: none !important;
 }
 
-input[type="checkbox"]:hover {
-    border-color: #38bdf8 !important;
-    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4), inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+input[type="checkbox"]::before {
+    content: "" !important;
+    position: absolute !important;
+    top: 2px !important;
+    left: 2px !important;
+    width: 12px !important;
+    height: 12px !important;
+    background: #8B949E !important;
+    border-radius: 50% !important;
+    transition: all 0.18s ease !important;
 }
 
 input[type="checkbox"]:checked {
-    background-color: #0284c7 !important;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'%3E%3C/polyline%3E%3C/svg%3E") !important;
-    background-repeat: no-repeat !important;
-    background-position: center !important;
-    background-size: 14px 14px !important;
-    border-color: #38bdf8 !important;
-    box-shadow: 0 0 12px rgba(56, 189, 248, 0.7), inset 0 1px 2px rgba(255, 255, 255, 0.2) !important;
+    background: #2563EB !important;
+    background-color: #2563EB !important;
+    border-color: #3B82F6 !important;
+    background-image: none !important;
 }
 
-/* Explicit Cyber Radio Styling */
-input[type="radio"] {
-    -webkit-appearance: none !important;
-    -moz-appearance: none !important;
-    appearance: none !important;
-    width: 20px !important;
-    height: 20px !important;
-    min-width: 20px !important;
-    min-height: 20px !important;
-    max-width: 20px !important;
-    max-height: 20px !important;
-    margin: 0 10px 0 0 !important;
-    cursor: pointer !important;
-    background-color: #090d16 !important;
-    border: 2px solid rgba(56, 189, 248, 0.5) !important;
-    border-radius: 50% !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    vertical-align: middle !important;
-    position: relative !important;
-    outline: none !important;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6) !important;
-    flex-shrink: 0 !important;
+input[type="checkbox"]:checked::before {
+    transform: translateX(14px) !important;
+    background: #FFFFFF !important;
 }
 
-input[type="radio"]:hover {
-    border-color: #38bdf8 !important;
-    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4) !important;
-}
-
-input[type="radio"]:checked {
-    background-color: #090d16 !important;
-    border-color: #38bdf8 !important;
-    box-shadow: 0 0 12px rgba(56, 189, 248, 0.7) !important;
-}
-
-input[type="radio"]:checked::after {
-    content: '' !important;
-    display: block !important;
-    width: 10px !important;
-    height: 10px !important;
-    border-radius: 50% !important;
-    background: linear-gradient(135deg, #0284c7 0%, #38bdf8 100%) !important;
-    box-shadow: 0 0 8px rgba(56, 189, 248, 0.9) !important;
-}
-
-label.block p,
-.block p,
-span.meta-text,
-p.meta-text {
-    color: #94a3b8 !important;
-    font-size: 0.82rem !important;
-}
-
-/* Accordions */
-.accordion,
-details,
-details > summary,
-.label-wrap,
-button.label-wrap,
-.cyber-accordion {
-    background: rgba(13, 20, 36, 0.9) !important;
-    background-color: rgba(13, 20, 36, 0.9) !important;
-    border: 1px solid rgba(56, 189, 248, 0.22) !important;
-    border-radius: 10px !important;
-    color: #f8fafc !important;
-}
-
-details > summary span,
-button.label-wrap span,
-.label-wrap .icon {
-    color: #38bdf8 !important;
-    font-weight: 600 !important;
-    font-size: 0.92rem !important;
-}
-
-/* Block Labels (Top-left titles on components) */
-span[data-testid="block-info"],
-.block-label,
-label > span.label-text,
-.label-wrap {
-    color: #38bdf8 !important;
-    font-weight: 600 !important;
-    background: transparent !important;
-}
-
-/* Inputs, Textareas, Textboxes, and Markdown blocks */
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+/* 6. Inputs, Dropdowns & Controls */
+input[type="text"],
+input[type="number"],
 textarea,
 select,
-.gr-input,
-.gr-text-input,
-div[data-testid="textbox"] textarea,
-div[data-testid="textbox"] input {
-    background: #090d16 !important;
-    background-color: #090d16 !important;
-    color: #f8fafc !important;
-    border: 1px solid rgba(56, 189, 248, 0.25) !important;
-    border-radius: 8px !important;
+.dropdown,
+.select,
+div[data-testid="dropdown"] {
+    background: #0D1117 !important;
+    background-color: #0D1117 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    color: #F0F6FC !important;
+    font-size: 0.85rem !important;
+    box-shadow: none !important;
 }
 
 input::placeholder,
 textarea::placeholder {
-    color: #64748b !important;
+    color: #6E7681 !important;
 }
 
-/* Tables / Dataframes */
+input:focus, textarea:focus, select:focus {
+    border-color: #2563EB !important;
+    outline: none !important;
+}
+
+ul.options, .options-wrap {
+    background: #161B22 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    color: #F0F6FC !important;
+}
+
+ul.options li:hover, ul.options li.selected {
+    background: #21262D !important;
+    color: #F0F6FC !important;
+}
+
+/* 7. Buttons: Primary (#2563EB) & Secondary (#21262D) */
+.btn-industrial-primary,
+.btn-cyber-primary,
+button.primary {
+    background: #2563EB !important;
+    background-color: #2563EB !important;
+    color: #FFFFFF !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    border: 1px solid #3B82F6 !important;
+    border-radius: 6px !important;
+    padding: 8px 16px !important;
+    box-shadow: none !important;
+    transition: background-color 0.15s ease !important;
+    cursor: pointer !important;
+}
+
+.btn-industrial-primary:hover,
+.btn-cyber-primary:hover,
+button.primary:hover {
+    background: #1D4ED8 !important;
+    background-color: #1D4ED8 !important;
+    border-color: #2563EB !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+.btn-industrial-secondary,
+.btn-cyber-secondary,
+.btn-cyber-live,
+button.secondary {
+    background: #21262D !important;
+    background-color: #21262D !important;
+    color: #C9D1D9 !important;
+    font-weight: 500 !important;
+    font-size: 0.85rem !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    padding: 8px 16px !important;
+    box-shadow: none !important;
+    transition: background-color 0.15s ease !important;
+    cursor: pointer !important;
+}
+
+.btn-industrial-secondary:hover,
+.btn-cyber-secondary:hover,
+.btn-cyber-live:hover,
+button.secondary:hover {
+    background: #30363D !important;
+    background-color: #30363D !important;
+    color: #F0F6FC !important;
+    border-color: #30363D !important;
+    transform: none !important;
+}
+
+.btn-cyber-danger,
+button.stop {
+    background: #21262D !important;
+    background-color: #21262D !important;
+    color: #F85149 !important;
+    border: 1px solid rgba(248, 81, 73, 0.35) !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+}
+
+.btn-cyber-danger:hover,
+button.stop:hover {
+    background: #B62324 !important;
+    background-color: #B62324 !important;
+    color: #FFFFFF !important;
+    border-color: #B62324 !important;
+}
+
+/* 8. Industrial Tables - NO vertical lines, horizontal 1px #21262D, 8px+ padding */
 table,
 .dataframe,
 .table-wrap,
-.table {
-    background: #0d1424 !important;
-    color: #f8fafc !important;
-    border: 1px solid rgba(56, 189, 248, 0.2) !important;
-    border-radius: 8px !important;
+div[data-testid="table"],
+div[data-testid="dataframe"] {
+    background: #161B22 !important;
+    background-color: #161B22 !important;
+    color: #C9D1D9 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    border-collapse: collapse !important;
+    overflow: hidden !important;
 }
 
-thead, th {
-    background: #111a30 !important;
-    color: #38bdf8 !important;
-    font-weight: 700 !important;
-    border-bottom: 2px solid rgba(56, 189, 248, 0.3) !important;
+thead, th, .dataframe thead tr th {
+    background: #161B22 !important;
+    background-color: #161B22 !important;
+    color: #8B949E !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.04em !important;
+    padding: 10px 14px !important;
+    border: none !important;
+    border-bottom: 1px solid #21262D !important;
+    border-left: none !important;
+    border-right: none !important;
 }
 
-tbody tr {
-    background: #0d1424 !important;
-    color: #f8fafc !important;
-    border-bottom: 1px solid rgba(56, 189, 248, 0.12) !important;
+tbody tr, .dataframe tbody tr {
+    background: #161B22 !important;
+    background-color: #161B22 !important;
+    color: #C9D1D9 !important;
+    border: none !important;
+    border-bottom: 1px solid #21262D !important;
+    border-left: none !important;
+    border-right: none !important;
+    transition: background-color 0.15s ease !important;
 }
 
-tbody tr:nth-child(even) {
-    background: #090d16 !important;
+tbody tr:nth-child(even), .dataframe tbody tr:nth-child(even) {
+    background: #161B22 !important;
+    background-color: #161B22 !important;
 }
 
-tbody tr:hover {
-    background: rgba(56, 189, 248, 0.15) !important;
+tbody tr:hover, .dataframe tbody tr:hover {
+    background: #1C2128 !important;
+    background-color: #1C2128 !important;
 }
 
-td {
-    color: #f8fafc !important;
-    border-color: rgba(56, 189, 248, 0.12) !important;
+td, .dataframe tbody tr td {
+    color: #C9D1D9 !important;
+    padding: 10px 14px !important;
+    border: none !important;
+    border-bottom: 1px solid #21262D !important;
+    border-left: none !important;
+    border-right: none !important;
+    font-size: 0.85rem !important;
 }
 
-/* Dropdowns */
-.dropdown,
-.select,
-div[data-testid="dropdown"] {
-    background: #090d16 !important;
-    color: #f8fafc !important;
-}
-
-ul.options,
-.options-wrap {
-    background: #0d1424 !important;
-    border: 1px solid rgba(56, 189, 248, 0.3) !important;
-    color: #f8fafc !important;
-}
-
-ul.options li {
-    color: #f8fafc !important;
-}
-
-ul.options li:hover,
-ul.options li.selected {
-    background: rgba(56, 189, 248, 0.2) !important;
-    color: #38bdf8 !important;
-}
-
-/* Cyber Cards & Panels */
-.cyber-card {
-    background: rgba(13, 20, 36, 0.78) !important;
-    backdrop-filter: blur(16px) !important;
-    -webkit-backdrop-filter: blur(16px) !important;
-    border: 1px solid var(--cyber-card-border) !important;
-    border-radius: 14px !important;
-    padding: 14px !important;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
-    transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease !important;
-}
-
-.cyber-card:hover {
-    border-color: rgba(56, 189, 248, 0.38) !important;
-    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
-}
-
-/* Buttons with Micro-Interactions */
-.btn-cyber-primary {
-    background: linear-gradient(135deg, #059669 0%, #0284c7 100%) !important;
-    color: #ffffff !important;
-    font-weight: 700 !important;
-    border: 1px solid rgba(56, 189, 248, 0.4) !important;
-    border-radius: 10px !important;
-    box-shadow: 0 4px 14px rgba(6, 182, 212, 0.3) !important;
-    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    cursor: pointer !important;
-}
-
-.btn-cyber-primary:hover {
-    transform: translateY(-1.5px) !important;
-    box-shadow: 0 6px 22px rgba(6, 182, 212, 0.6) !important;
-    filter: brightness(1.12) !important;
-}
-
-.btn-cyber-primary:active {
-    transform: translateY(0.5px) !important;
-    box-shadow: 0 2px 8px rgba(6, 182, 212, 0.4) !important;
-}
-
-.btn-cyber-live {
-    background: rgba(15, 23, 42, 0.85) !important;
-    color: #38bdf8 !important;
-    font-weight: 700 !important;
-    border: 1px solid rgba(56, 189, 248, 0.4) !important;
-    border-radius: 10px !important;
-    box-shadow: 0 2px 10px rgba(56, 189, 248, 0.15) !important;
-    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    cursor: pointer !important;
-}
-
-.btn-cyber-live:hover {
-    background: rgba(56, 189, 248, 0.18) !important;
-    border-color: #38bdf8 !important;
-    color: #ffffff !important;
-    box-shadow: 0 0 20px rgba(56, 189, 248, 0.45) !important;
-    transform: translateY(-1.5px) !important;
-}
-
-.btn-cyber-live:active {
-    transform: translateY(0.5px) !important;
-    box-shadow: 0 0 10px rgba(56, 189, 248, 0.3) !important;
-}
-
-.btn-cyber-secondary {
-    background: rgba(30, 41, 59, 0.8) !important;
-    color: #e2e8f0 !important;
-    border: 1px solid rgba(148, 163, 184, 0.25) !important;
-    border-radius: 10px !important;
-    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    cursor: pointer !important;
-}
-
-.btn-cyber-secondary:hover {
-    background: rgba(51, 65, 85, 0.9) !important;
-    border-color: rgba(56, 189, 248, 0.5) !important;
-    color: #ffffff !important;
-    transform: translateY(-1.5px) !important;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4) !important;
-}
-
-.btn-cyber-secondary:active {
-    transform: translateY(0.5px) !important;
-}
-
-/* Visual Panel & HUD Frame */
-.cyber-preview-frame {
-    border-radius: 12px !important;
-    border: 1px solid rgba(6, 182, 212, 0.35) !important;
-    background: radial-gradient(circle at center, rgba(17, 26, 48, 0.6) 0%, rgba(7, 10, 18, 0.95) 100%) !important;
-    box-shadow: inset 0 0 20px rgba(6, 182, 212, 0.12), 0 4px 20px rgba(0, 0, 0, 0.4) !important;
-}
-
-.cyber-status-text {
-    margin-top: 8px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    background: rgba(15, 23, 42, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    font-size: 0.85rem;
-}
-
-/* Real-time Detection Side Panel */
-.detection-panel-container {
-    min-height: 420px;
-    display: flex;
-    flex-direction: column;
-}
-
+/* 9. Zone C: Clean Log Card & Circular Confidence Gauge */
 .detection-panel-inner {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
 }
 
 .panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-bottom: 10px;
-    border-bottom: 1px solid rgba(56, 189, 248, 0.15);
-    margin-bottom: 12px;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    padding-bottom: 8px !important;
+    border-bottom: 1px solid #262C36 !important;
 }
 
 .panel-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.88rem;
-    font-weight: 700;
-    color: #e2e8f0;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    color: #F0F6FC !important;
 }
 
-.pulse-icon {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background-color: #06b6d4;
-    box-shadow: 0 0 8px #06b6d4;
+.status-indicator-dot {
+    width: 7px !important;
+    height: 7px !important;
+    border-radius: 50% !important;
+    background: #8B949E !important;
 }
 
-.pulse-icon.active {
-    background-color: #10b981;
-    box-shadow: 0 0 10px #10b981;
-    animation: pulseDot 1.5s infinite ease-in-out;
+.status-indicator-dot.active {
+    background: #10B981 !important;
 }
 
 .panel-badge {
-    font-size: 0.75rem;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 6px;
-    background: rgba(30, 41, 59, 0.8);
-    color: #94a3b8;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.72rem !important;
+    background: #21262D !important;
+    border: 1px solid #30363D !important;
+    border-radius: 6px !important;
+    padding: 2px 8px !important;
+    color: #8B949E !important;
 }
 
 .panel-badge.active {
-    background: rgba(16, 185, 129, 0.15);
-    color: #34d399;
-    border-color: rgba(16, 185, 129, 0.35);
+    color: #C9D1D9 !important;
 }
 
-/* Empty State Radar Scan */
-.detection-empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 32px 14px;
-    text-align: center;
-    background: rgba(15, 23, 42, 0.4);
-    border-radius: 12px;
-    border: 1px dashed rgba(56, 189, 248, 0.2);
-    margin: auto 0;
-}
-
-.radar-scan-box {
-    width: 54px;
-    height: 54px;
-    border-radius: 50%;
-    border: 2px solid rgba(6, 182, 212, 0.3);
-    position: relative;
-    margin-bottom: 14px;
-    box-shadow: 0 0 14px rgba(6, 182, 212, 0.15);
-    overflow: hidden;
-}
-
-.radar-beam {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    background: conic-gradient(from 0deg, rgba(6, 182, 212, 0.4) 0deg, transparent 60deg, transparent 360deg);
-    animation: radarSweep 3s linear infinite;
-}
-
-@keyframes radarSweep {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
-
-.empty-title {
-    font-size: 0.92rem;
-    font-weight: 600;
-    color: #e2e8f0;
-    margin-bottom: 4px;
-}
-
-.empty-sub {
-    font-size: 0.78rem;
-    color: #64748b;
-    line-height: 1.4;
-}
-
-/* Cyber Detection Cards */
 .cyber-cards-scroll {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    max-height: 460px;
-    overflow-y: auto;
-    padding-right: 4px;
-}
-
-.cyber-detection-card {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: rgba(15, 23, 42, 0.7);
-    border-radius: 12px;
-    padding: 8px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    transition: all 0.25s ease;
-}
-
-.cyber-detection-card:hover {
-    transform: translateX(2px);
-    background: rgba(30, 41, 59, 0.85);
-}
-
-.cyber-detection-card.match-success {
-    border-left: 3px solid #10b981;
-    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.1);
-}
-
-.cyber-detection-card.match-warning {
-    border-left: 3px solid #f59e0b;
-    box-shadow: 0 2px 10px rgba(245, 158, 11, 0.1);
-}
-
-.cyber-detection-card.match-unknown {
-    border-left: 3px solid #64748b;
-}
-
-.card-avatar-wrap {
-    position: relative;
-    width: 48px;
-    height: 48px;
-    flex-shrink: 0;
-}
-
-.card-avatar {
-    width: 48px;
-    height: 48px;
-    border-radius: 10px;
-    object-fit: cover;
-    border: 1px solid rgba(56, 189, 248, 0.25);
-    background: #1e293b;
-}
-
-.card-status-dot {
-    position: absolute;
-    bottom: -2px;
-    right: -2px;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 2px solid #0d1424;
-}
-
-.match-success .card-status-dot { background-color: #10b981; }
-.match-warning .card-status-dot { background-color: #f59e0b; }
-.match-unknown .card-status-dot { background-color: #64748b; }
-
-.card-details {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.card-name {
-    font-size: 0.88rem;
-    font-weight: 700;
-    color: #f8fafc;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.card-meta {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 0.75rem;
-    color: #94a3b8;
-}
-
-.card-meta b {
-    color: #cbd5e1;
-}
-
-.meta-sep {
-    color: #475569;
-}
-
-.card-similarity-badge {
-    margin-top: 1px;
-}
-
-.sim-pill {
-    display: inline-block;
-    font-size: 0.72rem;
-    font-weight: 700;
-    padding: 1px 6px;
-    border-radius: 5px;
-    font-family: 'JetBrains Mono', monospace;
-}
-
-.match-success .sim-pill {
-    background: rgba(16, 185, 129, 0.18);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.35);
-}
-
-.match-warning .sim-pill {
-    background: rgba(245, 158, 11, 0.18);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.35);
-}
-
-.match-unknown .sim-pill {
-    background: rgba(100, 116, 139, 0.2);
-    color: #94a3b8;
-    border: 1px solid rgba(100, 116, 139, 0.35);
-}
-
-.cyber-detection-card.is-vip {
-    border-left: 3px solid #f59e0b !important;
-    box-shadow: 0 0 16px rgba(245, 158, 11, 0.22) !important;
-}
-
-.cyber-detection-card.is-blacklist {
-    border-left: 3px solid #ef4444 !important;
-    box-shadow: 0 0 16px rgba(239, 68, 68, 0.28) !important;
-}
-
-.card-name-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-
-.role-pill {
-    display: inline-block;
-    font-size: 0.65rem;
-    font-weight: 700;
-    padding: 1px 6px;
-    border-radius: 4px;
-    letter-spacing: 0.3px;
-    text-transform: uppercase;
-}
-
-.role-verified {
-    background: rgba(16, 185, 129, 0.18);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.35);
-}
-
-.role-vip {
-    background: rgba(245, 185, 11, 0.22);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 185, 11, 0.5);
-    box-shadow: 0 0 8px rgba(245, 185, 11, 0.3);
-}
-
-.role-blacklist {
-    background: rgba(239, 68, 68, 0.22);
-    color: #f87171;
-    border: 1px solid rgba(239, 68, 68, 0.5);
-    box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
-}
-
-.role-possible {
-    background: rgba(245, 158, 11, 0.15);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.3);
-}
-
-.card-conf-track {
-    width: 100%;
-    height: 4px;
-    background: rgba(15, 23, 42, 0.7);
-    border-radius: 2px;
-    overflow: hidden;
-    margin-top: 5px;
-}
-
-.card-conf-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.4s ease;
-}
-
-.match-success .card-conf-fill { background: linear-gradient(90deg, #059669, #10b981); }
-.match-warning .card-conf-fill { background: linear-gradient(90deg, #d97706, #f59e0b); }
-.match-unknown .card-conf-fill { background: linear-gradient(90deg, #475569, #64748b); }
-.is-vip .card-conf-fill { background: linear-gradient(90deg, #d97706, #f59e0b, #fbbf24) !important; }
-.is-blacklist .card-conf-fill { background: linear-gradient(90deg, #b91c1c, #ef4444) !important; }
-
-/* Cyber Shortcuts Card in Live Camera UI */
-.cyber-shortcuts-card {
-    background: rgba(13, 20, 36, 0.75);
-    border: 1px solid rgba(56, 189, 248, 0.20);
-    border-radius: 12px;
-    padding: 10px 14px;
-    margin-top: 10px;
-    margin-bottom: 4px;
-    width: 100%;
-    box-sizing: border-box;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-}
-
-.shortcuts-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-}
-
-.shortcuts-badge {
-    background: rgba(6, 182, 212, 0.15);
-    color: #38bdf8;
-    border: 1px solid rgba(56, 189, 248, 0.35);
-    font-size: 0.62rem;
-    font-weight: 700;
-    padding: 2px 7px;
-    border-radius: 5px;
-    letter-spacing: 0.5px;
-}
-
-.shortcuts-title {
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: #cbd5e1;
-}
-
-.shortcuts-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-    gap: 6px 10px;
-}
-
-.sc-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.73rem;
-    color: #94a3b8;
-}
-
-.sc-item kbd {
-    background: #1e293b;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    border-radius: 4px;
-    padding: 1px 5px;
-    font-size: 0.68rem;
-    font-weight: 700;
-    color: #f1f5f9;
-    font-family: 'JetBrains Mono', monospace;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-}
-
-.sc-item span {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-input[type="range"] {
-    accent-color: #06b6d4 !important;
-}
-
-/* Person Mini-Avatar Thumbnail */
-.cyber-avatar-wrapper {
-    width: 96px !important;
-    min-width: 96px !important;
-    max-width: 96px !important;
-    height: 96px !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-
-.cyber-person-avatar-thumb {
-    width: 96px !important;
-    height: 96px !important;
-    min-width: 96px !important;
-    min-height: 96px !important;
-    max-width: 96px !important;
-    max-height: 96px !important;
-    border-radius: 14px !important;
-    border: 2px solid #06b6d4 !important;
-    box-shadow: 0 0 16px rgba(6, 182, 212, 0.45) !important;
-    background: #0f172a !important;
-    overflow: hidden !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    box-sizing: border-box !important;
-}
-
-.cyber-person-avatar-thumb img {
-    object-fit: cover !important;
-    border-radius: 12px !important;
-    width: 100% !important;
-    height: 100% !important;
-    display: block !important;
-}
-
-.cyber-person-avatar-thumb svg {
-    opacity: 0.45;
-}
-
-.person-card-top-row {
-    align-items: center !important;
-    gap: 14px !important;
-}
-
-/* ═══════════════════════════════════════════════════════
-   PILL TAB NAVIGACIJA — Custom cyber stil
-═══════════════════════════════════════════════════════ */
-.tabs > .tab-nav {
-    background: rgba(7, 10, 18, 0.6) !important;
-    border-bottom: 1px solid rgba(56, 189, 248, 0.18) !important;
-    padding: 6px 6px 0 6px !important;
-    gap: 4px !important;
-    flex-wrap: wrap !important;
-}
-
-.tabs > .tab-nav > button {
-    background: rgba(13, 20, 36, 0.7) !important;
-    border: 1px solid rgba(56, 189, 248, 0.18) !important;
-    border-bottom: none !important;
-    border-radius: 10px 10px 0 0 !important;
-    color: #94a3b8 !important;
-    font-weight: 600 !important;
-    font-size: 0.87rem !important;
-    padding: 7px 16px !important;
-    letter-spacing: 0.02em !important;
-    transition: all 0.22s ease !important;
-    position: relative !important;
-}
-
-.tabs > .tab-nav > button:hover {
-    background: rgba(30, 41, 59, 0.85) !important;
-    color: #e2e8f0 !important;
-    border-color: rgba(56, 189, 248, 0.35) !important;
-}
-
-.tabs > .tab-nav > button.selected {
-    background: linear-gradient(180deg, rgba(6,182,212,0.18) 0%, rgba(13,20,36,0.95) 100%) !important;
-    border-color: rgba(6, 182, 212, 0.5) !important;
-    color: #06b6d4 !important;
-    box-shadow: 0 -2px 12px rgba(6,182,212,0.2), inset 0 1px 0 rgba(6,182,212,0.3) !important;
-    text-shadow: 0 0 8px rgba(6,182,212,0.5) !important;
-}
-
-.tabs > .tab-nav > button.selected::after {
-    content: '';
-    position: absolute !important;
-    bottom: -1px;
-    left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, #06b6d4, transparent) !important;
-}
-
-/* Blur Mode Radio Group — vizualno grupiranje */
-.blur-mode-group .wrap {
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 5px !important;
-}
-
-.blur-mode-group label.svelte-1gfkn6j,
-.blur-mode-group label {
-    background: rgba(13, 20, 36, 0.7) !important;
-    border: 1px solid rgba(56, 189, 248, 0.15) !important;
-    border-radius: 8px !important;
-    padding: 5px 10px !important;
-    transition: all 0.18s ease !important;
-}
-
-.blur-mode-group label:has(input:checked) {
-    background: rgba(6, 182, 212, 0.12) !important;
-    border-color: rgba(6, 182, 212, 0.4) !important;
-    color: #38bdf8 !important;
-}
-
-/* Similarity confidence bar */
-.sim-bar-wrap {
-    height: 3px;
-    background: rgba(255,255,255,0.08);
-    border-radius: 3px;
-    margin-top: 4px;
-    overflow: hidden;
-}
-
-/* Edit person section */
-.edit-person-card {
-    border: 1px solid rgba(6, 182, 212, 0.35) !important;
-    background: rgba(10, 25, 45, 0.65) !important;
-    border-radius: 12px !important;
-    padding: 14px 16px !important;
-    margin: 10px 0 !important;
-    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.08) !important;
-}
-
-.edit-person-card h4 {
-    color: #38bdf8 !important;
-    margin-bottom: 8px !important;
-    font-weight: 600 !important;
-}
-
-/* Retention policy card */
-.retention-card {
-    border: 1px solid rgba(16, 185, 129, 0.35) !important;
-    background: rgba(10, 30, 35, 0.65) !important;
-    border-radius: 12px !important;
-    padding: 14px 16px !important;
-    margin-top: 14px !important;
-    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.08) !important;
-}
-
-.retention-card h4 {
-    color: #10b981 !important;
-    margin-bottom: 8px !important;
-    font-weight: 600 !important;
-}
-
-/* Retention Radio Group */
-.retention-radio-group .wrap {
     display: flex !important;
     flex-direction: column !important;
     gap: 6px !important;
+    max-height: 480px !important;
+    overflow-y: auto !important;
 }
 
-.retention-radio-group label {
-    background: rgba(13, 20, 36, 0.7) !important;
-    border: 1px solid rgba(16, 185, 129, 0.2) !important;
-    border-radius: 8px !important;
-    padding: 7px 12px !important;
-    transition: all 0.18s ease !important;
-    cursor: pointer !important;
-}
-
-.retention-radio-group label:hover {
-    border-color: rgba(16, 185, 129, 0.5) !important;
-    background: rgba(16, 185, 129, 0.08) !important;
-}
-
-.retention-radio-group label:has(input:checked) {
-    background: rgba(16, 185, 129, 0.18) !important;
-    border-color: rgba(16, 185, 129, 0.6) !important;
-    color: #34d399 !important;
-}
-
-/* --- DANGER ZONE & CONFIRMATION MODAL --- */
-.danger-zone-accordion {
-    border: 1px solid rgba(239, 68, 68, 0.4) !important;
-    background: rgba(13, 20, 36, 0.6) !important;
-    border-radius: 12px !important;
-    margin-top: 24px !important;
-    overflow: hidden !important;
-}
-
-.danger-zone-card {
-    background: linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(13, 20, 36, 0.95) 100%) !important;
-    border: 1px solid rgba(239, 68, 68, 0.3) !important;
-    border-radius: 10px !important;
-    padding: 16px 20px !important;
-}
-
-.btn-cyber-danger {
-    background: linear-gradient(135deg, #991b1b 0%, #ef4444 100%) !important;
-    color: #ffffff !important;
-    font-weight: 700 !important;
-    border: 1px solid #f87171 !important;
-    box-shadow: 0 0 16px rgba(239, 68, 68, 0.35) !important;
-    border-radius: 8px !important;
-    transition: all 0.2s ease !important;
-}
-
-.btn-cyber-danger:hover {
-    background: linear-gradient(135deg, #dc2626 0%, #ff4d4d 100%) !important;
-    box-shadow: 0 0 28px rgba(239, 68, 68, 0.7) !important;
-    transform: translateY(-1px) !important;
-}
-
-.cyber-modal-overlay {
-    position: fixed !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100vw !important;
-    height: 100vh !important;
-    background: rgba(4, 7, 15, 0.85) !important;
-    backdrop-filter: blur(10px) !important;
-    -webkit-backdrop-filter: blur(10px) !important;
-    z-index: 999999 !important;
+.cyber-detection-card {
     display: flex !important;
     align-items: center !important;
-    justify-content: center !important;
-    padding: 20px !important;
+    gap: 10px !important;
+    background: #161B22 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    padding: 8px 10px !important;
+    transition: background-color 0.15s ease !important;
+    box-shadow: none !important;
 }
 
-.cyber-modal-box {
-    background: #0d1424 !important;
-    border: 2px solid #ef4444 !important;
-    border-radius: 16px !important;
-    box-shadow: 0 0 50px rgba(239, 68, 68, 0.5), inset 0 0 20px rgba(239, 68, 68, 0.1) !important;
-    max-width: 640px !important;
-    width: 95% !important;
-    margin: auto !important;
-    padding: 26px !important;
+.cyber-detection-card:hover {
+    background: #1C2128 !important;
+    transform: none !important;
 }
 
-/* --- MULTI-SELECT BATCH DELETE TRAY --- */
-.multi-select-toggle-row {
-    background: rgba(13, 20, 36, 0.7) !important;
-    border: 1px solid rgba(56, 189, 248, 0.25) !important;
-    border-radius: 8px !important;
-    padding: 8px 14px !important;
-    margin: 8px 0 !important;
+.cyber-detection-card.match-success {
+    border-left: 3px solid #10B981 !important;
 }
 
-.multi-select-checkbox label {
+.cyber-detection-card.match-warning {
+    border-left: 3px solid #F59E0B !important;
+}
+
+.cyber-detection-card.match-unknown {
+    border-left: 3px solid #6E7681 !important;
+}
+
+.cyber-detection-card.match-blacklist {
+    border-left: 3px solid #EF4444 !important;
+}
+
+.cyber-detection-card.match-vip {
+    border-left: 3px solid #38BDF8 !important;
+}
+
+.card-avatar-wrap {
+    width: 38px !important;
+    height: 38px !important;
+    flex-shrink: 0 !important;
+}
+
+.card-avatar {
+    width: 38px !important;
+    height: 38px !important;
+    border-radius: 6px !important;
+    object-fit: cover !important;
+    background: #21262D !important;
+    border: 1px solid #262C36 !important;
+}
+
+.card-details {
+    flex: 1 !important;
+    min-width: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+}
+
+.card-name-row {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+}
+
+.card-name {
+    font-size: 0.85rem !important;
     font-weight: 600 !important;
-    color: #38bdf8 !important;
+    color: #F0F6FC !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
 }
 
-.batch-delete-tray {
-    background: linear-gradient(135deg, rgba(239, 68, 68, 0.06) 0%, rgba(13, 20, 36, 0.9) 100%) !important;
-    border: 1px solid rgba(239, 68, 68, 0.35) !important;
-    border-radius: 10px !important;
-    padding: 14px 16px !important;
-    margin: 10px 0 !important;
-    box-shadow: 0 4px 18px rgba(239, 68, 68, 0.1) !important;
+.card-meta {
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    font-size: 0.72rem !important;
+    color: #8B949E !important;
+}
+
+.meta-time {
+    color: #8B949E !important;
+    font-family: 'JetBrains Mono', monospace !important;
+}
+
+.meta-sep {
+    color: #484F58 !important;
+}
+
+.role-pill {
+    font-size: 0.62rem !important;
+    font-weight: 700 !important;
+    padding: 1px 5px !important;
+    border-radius: 4px !important;
+    letter-spacing: 0.02em !important;
+}
+
+.role-verified { background: #0E4429 !important; color: #3FB950 !important; }
+.role-possible { background: #4D2D00 !important; color: #E3B341 !important; }
+.role-vip { background: #1F3B66 !important; color: #58A6FF !important; }
+.role-blacklist { background: #490202 !important; color: #F85149 !important; }
+
+/* Circular Percentage Gauge */
+.circle-gauge {
+    width: 34px !important;
+    height: 34px !important;
+    flex-shrink: 0 !important;
+}
+
+.circular-chart {
+    display: block !important;
+    margin: 0 auto !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+}
+
+.circle-bg {
+    fill: none !important;
+    stroke: #21262D !important;
+    stroke-width: 3.5 !important;
+}
+
+.circle-val {
+    fill: none !important;
+    stroke-width: 3.5 !important;
+    stroke-linecap: round !important;
+    transition: stroke-dasharray 0.3s ease !important;
+}
+
+.percentage {
+    fill: #C9D1D9 !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 0.65rem !important;
+    font-weight: 600 !important;
+    text-anchor: middle !important;
+}
+
+.detection-empty-state {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 28px 12px !important;
+    text-align: center !important;
+}
+
+.empty-icon-box {
+    margin-bottom: 10px !important;
+}
+
+.empty-title {
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
+    color: #C9D1D9 !important;
+    margin-bottom: 4px !important;
+}
+
+.empty-sub {
+    font-size: 0.75rem !important;
+    color: #8B949E !important;
+    line-height: 1.4 !important;
+}
+
+/* 10. Clean Shortcuts Card */
+.industrial-shortcuts-card,
+.industrial-shortcuts-card {
+    background: #161B22 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    padding: 10px 12px !important;
+    margin-top: 8px !important;
+    box-shadow: none !important;
+}
+
+.shortcuts-header {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    margin-bottom: 8px !important;
+}
+
+.shortcuts-badge {
+    font-size: 0.65rem !important;
+    font-weight: 700 !important;
+    background: #21262D !important;
+    border: 1px solid #30363D !important;
+    color: #8B949E !important;
+    padding: 2px 6px !important;
+    border-radius: 4px !important;
+}
+
+.shortcuts-title {
+    font-size: 0.78rem !important;
+    color: #8B949E !important;
+}
+
+.shortcuts-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 6px 12px !important;
+    font-size: 0.75rem !important;
+    color: #C9D1D9 !important;
+}
+
+.sc-item {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+}
+
+.sc-item kbd {
+    background: #21262D !important;
+    border: 1px solid #30363D !important;
+    border-radius: 4px !important;
+    padding: 1px 5px !important;
+    font-size: 0.7rem !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    color: #F0F6FC !important;
+}
+
+/* Accordion */
+.cyber-accordion,
+details {
+    background: #161B22 !important;
+    border: 1px solid #262C36 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+}
+
+summary {
+    color: #C9D1D9 !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+}
+
+/* Compact File Component for Backup & Restore */
+.compact-file {
+    min-height: 80px !important;
+}
+.compact-file > .empty,
+.compact-file .file-upload,
+.compact-file [data-testid="file-upload"] {
+    min-height: 75px !important;
+    padding: 8px 12px !important;
+}
+.compact-file svg {
+    width: 22px !important;
+    height: 22px !important;
 }
 """
 
@@ -3717,61 +3213,95 @@ HEAD_DARK_JS = """
 """
 
 custom_theme = gr.themes.Soft(
-    primary_hue="cyan",
-    secondary_hue="blue",
+    primary_hue="blue",
+    secondary_hue="slate",
     neutral_hue="slate"
 ).set(
-    body_background_fill="#070a12",
-    body_background_fill_dark="#070a12",
-    background_fill_primary="#070a12",
-    background_fill_primary_dark="#070a12",
-    background_fill_secondary="#0d1424",
-    background_fill_secondary_dark="#0d1424",
-    block_background_fill="#0d1424",
-    block_background_fill_dark="#0d1424",
-    block_border_color="rgba(56, 189, 248, 0.22)",
-    block_border_color_dark="rgba(56, 189, 248, 0.22)",
-    block_label_background_fill="#0d1424",
-    block_label_background_fill_dark="#0d1424",
-    block_label_text_color="#38bdf8",
-    block_label_text_color_dark="#38bdf8",
-    block_title_text_color="#f8fafc",
-    block_title_text_color_dark="#f8fafc",
-    body_text_color="#f8fafc",
-    body_text_color_dark="#f8fafc",
-    body_text_color_subdued="#94a3b8",
-    body_text_color_subdued_dark="#94a3b8",
-    input_background_fill="#090d16",
-    input_background_fill_dark="#090d16",
-    input_border_color="rgba(56, 189, 248, 0.25)",
-    input_border_color_dark="rgba(56, 189, 248, 0.25)",
-    input_placeholder_color="#64748b",
-    input_placeholder_color_dark="#64748b",
-    checkbox_background_color="#090d16",
-    checkbox_background_color_selected="#0284c7",
-    checkbox_background_color_dark="#090d16",
-    checkbox_background_color_selected_dark="#0284c7",
-    checkbox_border_color="rgba(56, 189, 248, 0.45)",
-    checkbox_border_color_selected="#38bdf8",
-    checkbox_border_color_dark="rgba(56, 189, 248, 0.45)",
-    checkbox_border_color_selected_dark="#38bdf8",
-    checkbox_label_background_fill="#0d1424",
-    checkbox_label_background_fill_dark="#0d1424",
-    checkbox_label_text_color="#f8fafc",
-    checkbox_label_text_color_dark="#f8fafc",
-    accordion_text_color="#f8fafc",
-    accordion_text_color_dark="#f8fafc",
-    table_even_background_fill="#0d1424",
-    table_even_background_fill_dark="#0d1424",
-    table_odd_background_fill="#090d16",
-    table_odd_background_fill_dark="#090d16",
-    table_text_color="#f8fafc",
-    table_text_color_dark="#f8fafc",
-    button_secondary_background_fill="#1e293b",
-    button_secondary_background_fill_dark="#1e293b",
-    button_secondary_text_color="#f8fafc",
-    button_secondary_text_color_dark="#f8fafc"
+    body_background_fill="#0D1117",
+    body_background_fill_dark="#0D1117",
+    background_fill_primary="#0D1117",
+    background_fill_primary_dark="#0D1117",
+    background_fill_secondary="#161B22",
+    background_fill_secondary_dark="#161B22",
+    block_background_fill="#161B22",
+    block_background_fill_dark="#161B22",
+    block_border_color="#262C36",
+    block_border_color_dark="#262C36",
+    block_radius="6px",
+    container_radius="6px",
+    block_label_background_fill="#161B22",
+    block_label_background_fill_dark="#161B22",
+    block_label_text_color="#8B949E",
+    block_label_text_color_dark="#8B949E",
+    block_title_text_color="#F0F6FC",
+    block_title_text_color_dark="#F0F6FC",
+    body_text_color="#C9D1D9",
+    body_text_color_dark="#C9D1D9",
+    body_text_color_subdued="#8B949E",
+    body_text_color_subdued_dark="#8B949E",
+    input_background_fill="#0D1117",
+    input_background_fill_dark="#0D1117",
+    input_border_color="#262C36",
+    input_border_color_dark="#262C36",
+    input_placeholder_color="#6E7681",
+    input_placeholder_color_dark="#6E7681",
+    checkbox_background_color="#21262D",
+    checkbox_background_color_selected="#2563EB",
+    checkbox_background_color_dark="#21262D",
+    checkbox_background_color_selected_dark="#2563EB",
+    checkbox_border_color="#30363D",
+    checkbox_border_color_selected="#3B82F6",
+    checkbox_border_color_dark="#30363D",
+    checkbox_border_color_selected_dark="#3B82F6",
+    checkbox_label_background_fill="transparent",
+    checkbox_label_background_fill_dark="transparent",
+    checkbox_label_text_color="#C9D1D9",
+    checkbox_label_text_color_dark="#C9D1D9",
+    accordion_text_color="#F0F6FC",
+    accordion_text_color_dark="#F0F6FC",
+    table_even_background_fill="#161B22",
+    table_even_background_fill_dark="#161B22",
+    table_odd_background_fill="#161B22",
+    table_odd_background_fill_dark="#161B22",
+    table_text_color="#C9D1D9",
+    table_text_color_dark="#C9D1D9",
+    button_primary_background_fill="#2563EB",
+    button_primary_background_fill_dark="#2563EB",
+    button_primary_text_color="#FFFFFF",
+    button_primary_text_color_dark="#FFFFFF",
+    button_secondary_background_fill="#21262D",
+    button_secondary_background_fill_dark="#21262D",
+    button_secondary_text_color="#C9D1D9",
+    button_secondary_text_color_dark="#C9D1D9"
 )
+
+def get_header_bar_html():
+    hw_name, _ = hardware.get_onnx_acceleration_status()
+    db_stats = db.get_stats()
+    p_count = db_stats.get("total_persons", 0)
+    safe_hw = html.escape(str(hw_name))
+    return f"""
+    <div class="industrial-header-bar">
+        <div class="header-left">
+            <span class="header-brand">ArgusFace</span>
+            <span class="header-tagline">Industrial VMS</span>
+        </div>
+        <div class="header-middle">
+            <div class="status-pill">
+                <span class="status-dot green"></span>
+                <span>100% Lokalno</span>
+            </div>
+            <div class="status-pill">
+                <span class="status-dot blue"></span>
+                <span>{safe_hw} Aktivno</span>
+            </div>
+            <div class="status-pill">
+                <span class="status-dot slate"></span>
+                <span>Baza: {p_count} osoba</span>
+            </div>
+        </div>
+    </div>
+    """
 
 with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
     # Per-session state (eliminates global variables and multi-user race conditions)
@@ -3783,60 +3313,11 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
         "saved_indices": set()
     })
 
-    _hw_accel_name, _ = hardware.get_onnx_acceleration_status()
-    _db_stats = db.get_stats()
-    _p_count = _db_stats.get("total_persons", 0)
-    _s_count = _db_stats.get("total_samples", 0)
-
-    # Modern Cyber Glassmorphism Header Bar
-    gr.HTML(
-        f"""
-        <div class="cyber-header-bar">
-            <div class="header-left">
-                <div class="header-logo-icon">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M9 3H5a2 2 0 0 0-2 2v4m0 6v4a2 2 0 0 0 2 2h4m6 0h4a2 2 0 0 0 2-2v-4m0-6V5a2 2 0 0 0-2-2h-4"/>
-                        <circle cx="12" cy="10" r="3"/>
-                        <path d="M7 18a5 5 0 0 1 10 0"/>
-                    </svg>
-                </div>
-                <div class="header-titles">
-                    <div class="header-main-title">
-                        <span class="title-brand">ArgusFace</span>
-                        <span class="title-divider">•</span>
-                        <span class="title-desc">Biometrijski Sustav za Prepoznavanje Lica</span>
-                    </div>
-                    <div class="header-subtitle">
-                        100% lokalno i sigurno &nbsp;|&nbsp; RetinaFace detektor • EdgeFace Base prepoznavanje
-                    </div>
-                </div>
-            </div>
-            <div class="header-badges">
-                <div class="header-pill pill-success" title="Svi podaci se obrađuju isključivo na lokalnom računalu">
-                    <span class="pill-dot pulse-green"></span>
-                    <span>100% Lokalno</span>
-                </div>
-                <div class="header-pill pill-ai" title="Detektirano hardversko ubrzanje inferencije">
-                    <span class="pill-icon">⚡</span>
-                    <span>{_hw_accel_name}</span>
-                </div>
-                <div class="header-pill pill-db" title="Broj registriranih osoba i biometrijskih uzoraka u bazi">
-                    <span class="pill-icon">👥</span>
-                    <span>{_p_count} osoba • {_s_count} uzoraka</span>
-                </div>
-                <div class="header-pill pill-neutral">
-                    <span class="pill-icon">🖥️</span>
-                    <span>Sustav spreman</span>
-                    <span class="pill-check">✓</span>
-                </div>
-            </div>
-        </div>
-        """
-    )
-    
-    with gr.Tabs():
+    # Modern Industrial Dashboard Header Bar (Live dynamic synchronization)
+    top_header_bar = gr.HTML(get_header_bar_html)
+    with gr.Tabs() as main_tabs:
         # ------------------ TAB 1: PREPOZNAVANJE ------------------
-        with gr.TabItem("🔍 Prepoznavanje lica"):
+        with gr.TabItem("Live Feed"):
             with gr.Row(equal_height=False):
                 with gr.Column(scale=4, min_width=320, elem_classes=["cyber-card"]):
                     input_img = gr.Image(
@@ -3856,8 +3337,7 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                         with gr.Row():
                             landmarks_chk = gr.Checkbox(
                                 value=False,
-                                label="🔵 Prikaži točke lica (Landmarks)",
-                                info="Biometrijska wireframe geometrija lica"
+                                label="Prikaži točke lica (Landmarks)"
                             )
                         blur_mode_radio = gr.Radio(
                             choices=[
@@ -3871,9 +3351,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                             elem_classes=["blur-mode-group"]
                         )
                     with gr.Row():
-                        btn_recognize = gr.Button("🚀 Pokreni prepoznavanje slike", variant="primary", scale=2, elem_classes=["btn-cyber-primary"])
+                        btn_recognize = gr.Button("Pokreni analizu", variant="primary", scale=2, elem_classes=["btn-industrial-primary"])
                             
-                    with gr.Accordion("📹 Live Nadzor i Kamere (Pojedinačna ili 2×2 Mreža)", open=False, elem_classes=["cyber-accordion"]):
+                    with gr.Accordion("📹 IZVORI: Live Nadzor i Kamere (Web kamera, IP, RTSP / Pojedinačna ili 2×2 Mreža)", open=False, elem_classes=["cyber-accordion"]):
                         live_mode_radio = gr.Radio(
                             choices=["Pojedinačna kamera (Single View)", "Mreža više kamera (2×2 Grid)"],
                             value="Pojedinačna kamera (Single View)",
@@ -3949,8 +3429,7 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                     with gr.Row():
                         cam_enable_log = gr.Checkbox(
                             value=False,
-                            label="📋 Aktiviraj evidenciju prolazaka (Dnevnik)",
-                            info="Automatski zapisuje prepoznate osobe u evidenciju",
+                            label="Evidencija prolazaka",
                             scale=2
                         )
                         cam_cooldown_sec = gr.Slider(
@@ -3966,8 +3445,7 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                     with gr.Row():
                         cam_enable_nvr = gr.Checkbox(
                             value=False,
-                            label="🔴 24/7 NVR Video Snimanje (MP4)",
-                            info="Kontinuirano snima video segmente uz automatsko brisanje starih snimki",
+                            label="24/7 NVR snimanje",
                             scale=2
                         )
                         cam_nvr_segment_min = gr.Slider(
@@ -3983,18 +3461,17 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                     with gr.Row():
                         cam_enable_spoof = gr.Checkbox(
                             value=True,
-                            label="🛡️ Zaštita od lažiranja (Anti-Spoofing / Liveness)",
-                            info="Sprječava prevaru pokazivanjem fotografija ili ekrana mobitela. Isključite ako želite identificirati osobe sa slika na mobitelu.",
+                            label="Anti-spoofing zaštita",
                             scale=2
                         )
 
                     with gr.Row():
-                        btn_launch_live = gr.Button("🎥 Pokreni Live Kameru", variant="secondary", scale=2, elem_classes=["btn-cyber-live"])
-                        btn_launch_grid = gr.Button("🎛️ Pokreni 2×2 Mrežu", variant="secondary", scale=2, visible=False, elem_classes=["btn-cyber-live"])
-                        btn_open_snaps_quick = gr.Button("📂 Snimke (S)", variant="secondary", scale=1, elem_classes=["btn-cyber-secondary"])
+                        btn_launch_live = gr.Button("Pokreni Live Kameru", variant="primary", scale=2, elem_classes=["btn-industrial-primary"])
+                        btn_launch_grid = gr.Button("Pokreni 2×2 Mrežu", variant="primary", scale=2, visible=False, elem_classes=["btn-industrial-primary"])
+                        btn_open_snaps_quick = gr.Button("Snimke", variant="secondary", scale=1, elem_classes=["btn-industrial-secondary"])
                     with gr.Row():
                         live_shortcuts_html = gr.HTML("""
-                        <div class="cyber-shortcuts-card">
+                        <div class="industrial-shortcuts-card">
                             <div class="shortcuts-header">
                                 <span class="shortcuts-badge">TIPKOVNICA & MIŠ</span>
                                 <span class="shortcuts-title">Brze kontrole u video prozoru:</span>
@@ -4028,8 +3505,7 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                 with gr.Column(scale=3, min_width=270, elem_classes=["cyber-card"]):
                     cards_show_all_chk = gr.Checkbox(
                         value=False,
-                        label="Prikaži i nepoznata lica (% sličnosti)",
-                        info="Zadano: prikaz samo prepoznatih (zelena)"
+                        label="Prikaži i nepoznata lica"
                     )
                     detection_cards_html = gr.HTML(
                         value=generate_detection_cards_html([], show_all_faces=False),
@@ -4079,13 +3555,13 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                     quick_add_status = gr.Markdown("")
 
         # ------------------ TAB 2: UPRAVLJANJE BAZOM ------------------
-        with gr.TabItem("👥 Baza Osoba"):
+        with gr.TabItem("Baza Osoba"):
             with gr.Row():
                 # Lijevi stupac: Unos i označavanje na grupnoj slici
                 with gr.Column(scale=1):
                     with gr.Tabs():
                         # Podtab 1: Pojedinačni unos i izrezivanje s grupne slike
-                        with gr.TabItem("Pojedinačni unos / Označavanje lica"):
+                        with gr.TabItem("Pojedinačni unos"):
                             # Mini-avatar kartica odabrane osobe i brzi pretraživač
                             with gr.Row(equal_height=True, elem_classes=["person-card-top-row"]):
                                 selected_person_avatar = gr.HTML(
@@ -4477,7 +3953,7 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                             nvr_action_status_md = gr.Markdown("")
 
         # ------------------ TAB 4: DNEVNIK PROLAZAKA (EVIDENCIJA) ------------------
-        with gr.TabItem("📋 Dnevnik Prolazaka (Evidencija)") as tab_events:
+        with gr.TabItem("Dnevnik Prolazaka") as tab_events:
             ev_stats_init, ev_table_init, ev_cam_init, ev_crop_init, ev_info_init, ev_video_init, ev_id_init, ev_del_btn_init = get_events_ui_data()
             events_stats_md = gr.Markdown(ev_stats_init)
             selected_event_id_state = gr.State(ev_id_init)
@@ -4710,21 +4186,20 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
                         """
                     )
                 with gr.Column(scale=1):
-                    gr.Markdown("### 📦 Sigurnosna kopija i arhiviranje baze")
-                    gr.Markdown("Izvezite cjelokupnu bazu podataka (`database.db`), biometrijske vektore i fotografije lica u ZIP arhivu ili obnovite bazu iz postojeće arhive.")
-                    
-                    with gr.Group():
-                        gr.Markdown("#### 💾 Izvoz sigurnosne kopije (Export)")
-                        btn_export_backup = gr.Button("📦 Kreiraj i preuzmi sigurnosnu kopiju (ZIP)", variant="primary")
-                        backup_download_file = gr.File(label="Preuzmite ZIP arhivu", interactive=False)
-                        btn_open_backup_folder = gr.Button("📂 Otvori mapu sa sigurnosnim kopijama (Windows Explorer)", variant="secondary")
-                        backup_export_status = gr.Markdown("")
-                        
-                    with gr.Group():
-                        gr.Markdown("#### 📥 Vraćanje sigurnosne kopije (Restore / Import)")
-                        backup_upload_file = gr.File(label="Prenesite ZIP arhivu za uvoz", file_types=[".zip"], file_count="single")
-                        btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
-                        backup_import_status = gr.Markdown("")
+                    with gr.Accordion("📦 Sigurnosna kopija i vraćanje baze (Backup & Restore ZIP)", open=False, elem_classes=["cyber-accordion"]):
+                        gr.Markdown("*Kreirajte cjelovitu ZIP arhivu sustava ili obnovite postojeću bazu i fotografije.*")
+                        with gr.Tabs():
+                            with gr.TabItem("💾 Izvoz (Export)"):
+                                with gr.Row():
+                                    btn_export_backup = gr.Button("📦 Kreiraj ZIP arhivu", variant="primary", scale=3)
+                                    btn_open_backup_folder = gr.Button("📂 Otvori mapu (Explorer)", variant="secondary", scale=2)
+                                backup_download_file = gr.File(label="Preuzmite ZIP arhivu", interactive=False, height=85, elem_classes=["compact-file"])
+                                backup_export_status = gr.Markdown("")
+                                
+                            with gr.TabItem("📥 Vraćanje (Restore / Import)"):
+                                backup_upload_file = gr.File(label="Prenesite ZIP arhivu za uvoz", file_types=[".zip"], file_count="single", height=85, elem_classes=["compact-file"])
+                                btn_import_backup = gr.Button("⚠️ Uvezi arhivu i obnovi bazu", variant="stop")
+                                backup_import_status = gr.Markdown("")
 
                     with gr.Group(elem_classes=["cyber-card", "retention-card"]):
                         gr.Markdown("#### 🛡️ GDPR Upravljanje podacima i automatska rotacija (Data Retention)")
@@ -5025,6 +4500,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
         fn=view_person_details,
         inputs=[manage_person_dropdown],
         outputs=[person_gallery, person_info_md, sample_delete_dropdown]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
 
     # 5b. Update save button label dynamically when typing name and leaving input
@@ -5083,6 +4561,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
         fn=batch_enroll_files,
         inputs=[batch_naming_mode, batch_single_name, batch_files_input],
         outputs=[batch_status_md, manage_person_dropdown, existing_person_picker, db_table, db_stats_md]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
     
     def _blur_flags(blur_mode: str):
@@ -5234,6 +4715,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
         fn=quick_add_face_to_db,
         inputs=[unknown_face_dropdown, quick_name_input, rec_faces_state],
         outputs=[quick_add_status, manage_person_dropdown, existing_person_picker, db_table, db_stats_md]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
     
     btn_refresh_db.click(
@@ -5242,6 +4726,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
     ).then(
         fn=update_both_person_dropdowns,
         outputs=[manage_person_dropdown, existing_person_picker]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
     
     # CLICKING ON TABLE AUTOMATICALLY INSERTS NAME AND LOADS PROFILE ON THE LEFT (OR TOGGLES MULTI-SELECT)
@@ -5299,6 +4786,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
             edit_person_notes,
             edit_person_status
         ]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
     
     btn_delete_sample.click(
@@ -5308,6 +4798,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
     ).then(
         fn=refresh_database_view,
         outputs=[db_table, db_stats_md]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
 
     # Danger Zone - Cjelokupno brisanje baze (Modal)
@@ -5339,6 +4832,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
             selected_person_avatar,
             system_info_md
         ]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
 
     # Grupno označavanje i brisanje osoba (Batch Delete)
@@ -5395,6 +4891,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
             selected_person_avatar,
             system_info_md
         ]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
 
     btn_open_snaps_quick.click(
@@ -5578,6 +5077,9 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
             existing_person_picker,
             system_info_md
         ]
+    ).then(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
     )
 
     retention_period_radio.change(
@@ -5708,7 +5210,15 @@ with gr.Blocks(title="Argusface - Sustav za Prepoznavanje Lica") as demo:
         outputs=[sorter_target_persons]
     )
 
+    main_tabs.select(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
+    )
+
     demo.load(
+        fn=get_header_bar_html,
+        outputs=[top_header_bar]
+    ).then(
         fn=refresh_database_view,
         outputs=[db_table, db_stats_md]
     ).then(

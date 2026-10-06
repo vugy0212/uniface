@@ -14,7 +14,30 @@ def load_settings() -> dict:
         "snapshot_dir": DEFAULT_SNAPSHOT_DIR,
         "save_mode": "annotated", # 'annotated' (with HUD & boxes) or 'both' or 'clean'
         "threshold": 0.45,
-        "gdpr_retention_days": 30
+        "gdpr_retention_days": 30,
+        "anti_spoofing": True,
+        "telegram_enabled": False,
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "telegram_chat_id_security": "",
+        "telegram_chat_id_vip": "",
+        "telegram_notify_blacklist": True,
+        "telegram_notify_vip": True,
+        "telegram_notify_spoof": True,
+        "telegram_notify_unknown": False,
+        "telegram_cooldown_min": 5,
+        "email_enabled": False,
+        "email_smtp_host": "smtp.gmail.com",
+        "email_smtp_port": 587,
+        "email_use_tls": True,
+        "email_use_ssl": False,
+        "email_sender": "",
+        "email_password": "",
+        "email_recipients": "",
+        "email_notify_blacklist": True,
+        "email_notify_spoof": True,
+        "email_notify_vip": False,
+        "email_cooldown_min": 10
     }
     if not os.path.isfile(SETTINGS_FILE):
         return defaults
@@ -219,3 +242,105 @@ def execute_gdpr_retention(retention_days: int = None) -> dict:
         "freed_mb": freed_mb,
         "status_message": f"✅ **GDPR rotacija uspješno izvršena** (starije od {retention_days} dana):\n* Obrisano događaja u evidenciji: **{db_res.get('deleted_events', 0)}**\n* Obrisano slika kadrova: **{total_snapshots}**\n* Obrisano NVR video snimaka: **{nvr_res.get('deleted_videos', 0)}**\n* Oslobođeno prostora na disku: **{freed_mb} MB**"
     }
+
+def get_anti_spoofing() -> bool:
+    """Returns True if anti-spoofing (liveness detection) is enabled (default: True)."""
+    return bool(load_settings().get("anti_spoofing", True))
+
+def set_anti_spoofing(enabled: bool) -> bool:
+    """Saves anti-spoofing toggle to settings."""
+    cfg = load_settings()
+    cfg["anti_spoofing"] = bool(enabled)
+    return save_settings(cfg)
+
+def get_telegram_config() -> dict:
+    """Returns Telegram notification configuration."""
+    cfg = load_settings()
+    return {
+        "enabled": bool(cfg.get("telegram_enabled", False)),
+        "bot_token": str(cfg.get("telegram_bot_token", "")).strip(),
+        "chat_id": str(cfg.get("telegram_chat_id", "")).strip(),
+        "chat_id_security": str(cfg.get("telegram_chat_id_security", "")).strip(),
+        "chat_id_vip": str(cfg.get("telegram_chat_id_vip", "")).strip(),
+        "notify_blacklist": bool(cfg.get("telegram_notify_blacklist", True)),
+        "notify_vip": bool(cfg.get("telegram_notify_vip", True)),
+        "notify_spoof": bool(cfg.get("telegram_notify_spoof", True)),
+        "notify_unknown": bool(cfg.get("telegram_notify_unknown", False)),
+        "cooldown_min": int(cfg.get("telegram_cooldown_min", 5))
+    }
+
+def save_telegram_config(
+    enabled: bool,
+    bot_token: str,
+    chat_id: str,
+    notify_blacklist: bool = True,
+    notify_vip: bool = True,
+    notify_spoof: bool = True,
+    notify_unknown: bool = False,
+    cooldown_min: int = 5,
+    chat_id_security: str = "",
+    chat_id_vip: str = ""
+) -> bool:
+    """Saves Telegram notification configuration."""
+    cfg = load_settings()
+    cfg["telegram_enabled"] = bool(enabled)
+    cfg["telegram_bot_token"] = str(bot_token).strip()
+    cfg["telegram_chat_id"] = str(chat_id).strip()
+    cfg["telegram_chat_id_security"] = str(chat_id_security).strip()
+    cfg["telegram_chat_id_vip"] = str(chat_id_vip).strip()
+    cfg["telegram_notify_blacklist"] = bool(notify_blacklist)
+    cfg["telegram_notify_vip"] = bool(notify_vip)
+    cfg["telegram_notify_spoof"] = bool(notify_spoof)
+    cfg["telegram_notify_unknown"] = bool(notify_unknown)
+    cfg["telegram_cooldown_min"] = max(1, int(cooldown_min))
+    return save_settings(cfg)
+
+def get_email_config() -> dict:
+    """Returns E-mail notification configuration."""
+    cfg = load_settings()
+    return {
+        "enabled": bool(cfg.get("email_enabled", False)),
+        "smtp_host": str(cfg.get("email_smtp_host", "smtp.gmail.com")).strip(),
+        "smtp_port": int(cfg.get("email_smtp_port", 587)),
+        "use_tls": bool(cfg.get("email_use_tls", True)),
+        "use_ssl": bool(cfg.get("email_use_ssl", False)),
+        "sender": str(cfg.get("email_sender", "")).strip(),
+        "password": str(cfg.get("email_password", "")).strip(),
+        "recipients": str(cfg.get("email_recipients", "")).strip(),
+        "notify_blacklist": bool(cfg.get("email_notify_blacklist", True)),
+        "notify_spoof": bool(cfg.get("email_notify_spoof", True)),
+        "notify_vip": bool(cfg.get("email_notify_vip", False)),
+        "cooldown_min": int(cfg.get("email_cooldown_min", 10))
+    }
+
+def save_email_config(
+    enabled: bool,
+    smtp_host: str,
+    smtp_port: int,
+    use_tls: bool,
+    use_ssl: bool,
+    sender: str,
+    password: str,
+    recipients: str,
+    notify_blacklist: bool = True,
+    notify_spoof: bool = True,
+    notify_vip: bool = False,
+    cooldown_min: int = 10
+) -> bool:
+    """Saves E-mail notification configuration."""
+    cfg = load_settings()
+    cfg["email_enabled"] = bool(enabled)
+    cfg["email_smtp_host"] = str(smtp_host).strip()
+    cfg["email_smtp_port"] = int(smtp_port)
+    cfg["email_use_tls"] = bool(use_tls)
+    cfg["email_use_ssl"] = bool(use_ssl)
+    cfg["email_sender"] = str(sender).strip()
+    cfg["email_password"] = str(password).strip()
+    cfg["email_recipients"] = str(recipients).strip()
+    cfg["email_notify_blacklist"] = bool(notify_blacklist)
+    cfg["email_notify_spoof"] = bool(notify_spoof)
+    cfg["email_notify_vip"] = bool(notify_vip)
+    cfg["email_cooldown_min"] = max(1, int(cooldown_min))
+    return save_settings(cfg)
+
+

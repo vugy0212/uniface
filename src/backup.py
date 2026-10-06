@@ -64,19 +64,52 @@ def import_database_zip(zip_file_input, data_dir: str) -> tuple[bool, str]:
             namelist = zf.namelist()
             if "database.db" not in namelist:
                 return False, "❌ Neispravan format arhive: 'database.db' nije pronađen u ZIP datoteci."
-                
+
+            # Security: Zip Bomb protection (check file count and total uncompressed size)
+            MAX_FILES = 50_000
+            MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB limit
+            infolist = zf.infolist()
+            if len(infolist) > MAX_FILES:
+                return False, f"❌ Arhiva premašuje maksimalni dopušteni broj datoteka ({MAX_FILES})."
+            
+            total_uncompressed = sum(info.file_size for info in infolist)
+            if total_uncompressed > MAX_TOTAL_BYTES:
+                return False, "❌ Arhiva premašuje maksimalnu dopuštenu dekomprimiranu veličinu (5 GB)."
+
             # Create safety backup of current database
             if os.path.exists(db_file):
                 shutil.copy2(db_file, bak_file)
                 
-            # Extract database.db and image folders
+            abs_data_dir = os.path.abspath(data_dir)
+
+            # Extract database.db and image folders safely
             for item in namelist:
                 # Security: prevent directory traversal (Zip Slip)
-                norm = os.path.normpath(item)
-                if norm.startswith("..") or os.path.isabs(norm):
+                norm = os.path.normpath(item).lstrip("\\/").replace("\\", "/")
+                parts = [p for p in norm.split("/") if p and p != "."]
+                if not parts:
                     continue
-                    
-                target = os.path.join(data_dir, norm)
+                if any(p == ".." for p in parts):
+                    continue
+
+                # Whitelist: strictly extract database.db, crops/, and uploads/
+                if parts[0] == "database.db":
+                    if len(parts) > 1:
+                        continue
+                elif parts[0] in ("crops", "uploads"):
+                    pass
+                else:
+                    continue  # Ignore any other files
+
+                target = os.path.abspath(os.path.join(data_dir, *parts))
+                
+                # Canonical path verification
+                try:
+                    if os.path.commonpath([abs_data_dir, target]) != abs_data_dir:
+                        continue
+                except Exception:
+                    continue
+
                 if item.endswith("/"):
                     os.makedirs(target, exist_ok=True)
                 else:

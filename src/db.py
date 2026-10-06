@@ -89,6 +89,10 @@ def init_db():
                 conn.execute("ALTER TABLE detection_events ADD COLUMN video_offset_sec REAL DEFAULT 0.0;")
             except Exception:
                 pass
+            try:
+                conn.execute("ALTER TABLE persons ADD COLUMN role TEXT DEFAULT 'standard';")
+            except Exception:
+                pass
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_face_samples_person_id ON face_samples(person_id);
             """)
@@ -99,35 +103,38 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_detection_events_name ON detection_events(person_name);
             """)
 
-def add_person(name: str, notes: str = "") -> int:
+def add_person(name: str, notes: str = "", role: str = "standard") -> int:
     name = name.strip()
     if not name:
         raise ValueError("Ime osobe ne smije biti prazno.")
+    role_clean = (role or "standard").strip().lower()
     with get_db() as conn:
         with conn:
-            cur = conn.execute("INSERT INTO persons (name, notes) VALUES (?, ?)", (name, notes.strip()))
+            cur = conn.execute("INSERT INTO persons (name, notes, role) VALUES (?, ?, ?)", (name, notes.strip(), role_clean))
             person_id = cur.lastrowid
     invalidate_cache()
     return person_id
 
-def get_or_create_person(name: str, notes: str = "") -> int:
+def get_or_create_person(name: str, notes: str = "", role: str = "standard") -> int:
     name = name.strip()
     if not name:
         raise ValueError("Ime osobe ne smije biti prazno.")
+    role_clean = (role or "standard").strip().lower()
     with get_db() as conn:
         row = conn.execute("SELECT id FROM persons WHERE LOWER(name) = LOWER(?)", (name,)).fetchone()
         if row:
             return row["id"]
         with conn:
-            cur = conn.execute("INSERT INTO persons (name, notes) VALUES (?, ?)", (name, notes.strip()))
+            cur = conn.execute("INSERT INTO persons (name, notes, role) VALUES (?, ?, ?)", (name, notes.strip(), role_clean))
             person_id = cur.lastrowid
     invalidate_cache()
     return person_id
 
-def update_person(person_id: int, name: str, notes: str = ""):
+def update_person(person_id: int, name: str, notes: str = "", role: str = "standard"):
     name = name.strip()
     if not name:
         raise ValueError("Ime osobe ne smije biti prazno.")
+    role_clean = (role or "standard").strip().lower()
     with get_db() as conn:
         existing = conn.execute("SELECT id FROM persons WHERE LOWER(name) = LOWER(?) AND id != ?", (name, person_id)).fetchone()
         if existing:
@@ -135,10 +142,18 @@ def update_person(person_id: int, name: str, notes: str = ""):
         old = conn.execute("SELECT name FROM persons WHERE id = ?", (person_id,)).fetchone()
         old_name = old["name"] if old else None
         with conn:
-            conn.execute("UPDATE persons SET name = ?, notes = ? WHERE id = ?", (name, notes.strip(), person_id))
+            conn.execute("UPDATE persons SET name = ?, notes = ?, role = ? WHERE id = ?", (name, notes.strip(), role_clean, person_id))
             if old_name and old_name != name:
                 conn.execute("UPDATE detection_events SET person_name = ? WHERE person_name = ?", (name, old_name))
     invalidate_cache()
+
+def get_person_role(name: str) -> str:
+    """Returns the role ('standard', 'vip', 'blacklist') of person by name."""
+    if not name:
+        return "standard"
+    with get_db() as conn:
+        row = conn.execute("SELECT COALESCE(role, 'standard') as role FROM persons WHERE LOWER(name) = LOWER(?)", (name.strip(),)).fetchone()
+        return str(row["role"]).lower() if row else "standard"
 
 def add_face_sample(person_id: int, image_path: str, crop_path: str, embedding: np.ndarray, confidence: float = 1.0) -> int:
     embedding_bytes = np.ascontiguousarray(embedding, dtype=np.float32).tobytes()
@@ -156,7 +171,7 @@ def add_face_sample(person_id: int, image_path: str, crop_path: str, embedding: 
 def get_all_persons():
     with get_db() as conn:
         rows = conn.execute("""
-            SELECT p.id, p.name, p.notes, p.created_at,
+            SELECT p.id, p.name, p.notes, COALESCE(p.role, 'standard') as role, p.created_at,
                    COUNT(s.id) as sample_count,
                    MAX(s.created_at) as last_sample_at
             FROM persons p
@@ -169,7 +184,7 @@ def get_all_persons():
 def get_person(person_id: int):
     with get_db() as conn:
         row = conn.execute("""
-            SELECT p.id, p.name, p.notes, p.created_at,
+            SELECT p.id, p.name, p.notes, COALESCE(p.role, 'standard') as role, p.created_at,
                    COUNT(s.id) as sample_count
             FROM persons p
             LEFT JOIN face_samples s ON p.id = s.person_id
@@ -347,6 +362,34 @@ def clear_detection_events():
                         except Exception:
                             pass
             conn.execute("DELETE FROM detection_events;")
+
+def get_detection_event_by_id(event_id: int):
+    """Returns a single detection event dictionary by ID, or None."""
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT id, person_name, similarity, source_label, crop_path, snapshot_path, 
+                   video_path, video_offset_sec, datetime(created_at, 'localtime') as local_time, created_at
+            FROM detection_events
+            WHERE id = ?
+        """, (event_id,)).fetchone()
+        return dict(row) if row else None
+
+def delete_detection_event(event_id: int) -> bool:
+    """Deletes a single detection event by ID and removes its associated crop/snapshot files."""
+    with get_db() as conn:
+        with conn:
+            row = conn.execute("SELECT crop_path, snapshot_path FROM detection_events WHERE id = ?", (event_id,)).fetchone()
+            if not row:
+                return False
+            for col in ("crop_path", "snapshot_path"):
+                cp = row[col]
+                if cp and os.path.exists(cp):
+                    try:
+                        os.remove(cp)
+                    except Exception:
+                        pass
+            conn.execute("DELETE FROM detection_events WHERE id = ?", (event_id,))
+            return True
 
 def purge_old_detection_events(retention_days: int) -> dict:
     """

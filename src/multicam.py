@@ -199,7 +199,7 @@ def draw_grid_master_hud(master_frame, fps, active_count, total_count, solo_cam=
     cv2.line(master_frame, (0, top_h), (w, top_h), (212, 182, 6), 2) # Cyan neon line
     
     # Title & Telemetry
-    cv2.putText(master_frame, "UniFace Multi-Cam 2x2 Grid", (14, 28), cv2.FONT_HERSHEY_DUPLEX, 0.68, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(master_frame, "Argusface Multi-Cam 2x2 Grid", (14, 28), cv2.FONT_HERSHEY_DUPLEX, 0.68, (255, 255, 255), 1, cv2.LINE_AA)
     
     ev_txt = "● EVIDENCIJA" if log_events else "EVIDENCIJA: OFF"
     ev_color = (129, 185, 16) if log_events else (148, 163, 184)
@@ -249,7 +249,7 @@ def run_multicam_grid(
     """
     accel_type, accel_status = hardware.get_onnx_acceleration_status()
     print("=========================================================")
-    print("      UniFace Multi-Camera 2x2 Grid - Nadzor Uživo")
+    print("      Argusface Multi-Camera 2x2 Grid - Nadzor Uživo")
     print(f"      [{accel_status} ({accel_type})]")
     print(f"      [Prag: {threshold} | Interval: {process_interval} | Dnevnik: {log_events} | NVR: {record_nvr}]")
     print("=========================================================")
@@ -276,7 +276,7 @@ def run_multicam_grid(
         print(f" -> Pokrenuta radna dretva za Cam #{cid}: {lbl} ({src})")
 
     # 3. Window configuration
-    window_name = "UniFace Multi-Camera 2x2 Grid"
+    window_name = "Argusface Multi-Camera 2x2 Grid"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1280, 760)
 
