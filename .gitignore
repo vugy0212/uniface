@@ -172,4 +172,11 @@ cython_debug/
 data/
 *.db
 *.db-journal
-
+repo/
+dist_installer/
+*.exe
+~$*
+Gemini_Generated_*
+beach_*.jpg
+face_crop_*.jpg
+test_*.jpg
